@@ -1,0 +1,640 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Чат</title>
+<link rel="stylesheet" href="theme.css">
+<style>
+  body { display: flex; flex-direction: column; position: relative; }
+  .wintitlebar { height: 40px; }
+  .wintitlebar .who { display: flex; align-items: center; gap: 8px; min-width: 0; -webkit-app-region: drag; }
+  .dot { width: 11px; height: 11px; border-radius: 50%; background: var(--offline); flex-shrink: 0; -webkit-app-region: no-drag; }
+  .dot.active { background: var(--online); box-shadow: 0 0 6px 0 var(--online); }
+  .dot.idle { background: var(--afk); box-shadow: 0 0 6px 0 var(--afk); }
+  .wintitlebar .who .n { font-weight: 600; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .wintitlebar .who .s { font-weight: 400; color: var(--muted); font-size: 11px; margin-left: 4px; }
+
+  #messages { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 8px; }
+  .msg { max-width: 78%; min-width: 0; padding: 7px 11px 6px; border-radius: 12px; background: var(--bubble); align-self: flex-start; }
+  .msg.own { background: var(--own); align-self: flex-end; }
+  .msg .who { font-size: 10.5px; color: var(--accent); font-weight: 600; margin-bottom: 2px; }
+  .msg.own .who { display: none; }
+  .msg .txt { white-space: pre-wrap; word-break: break-word; line-height: 1.4; }
+  .msg .time { float: right; margin: 3px 0 -3px 12px; font-size: 10px; color: var(--muted); }
+  .msg .files-block { display: flex; flex-direction: column; gap: 6px; }
+  .msg .file { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--hover); border-radius: 8px; text-decoration: none; color: var(--text); min-width: 0; }
+  .msg .file .fi { color: var(--accent-2); flex-shrink: 0; display: flex; width: 17px; height: 17px; position: relative; }
+  .msg .file .fi .fi-download, .msg .file .fi .fi-progress, .msg .file .fi .fi-check { display: none; }
+  .msg .file:hover .fi .fi-file { display: none; }
+  .msg .file:hover .fi .fi-download { display: flex; }
+  .msg .file.downloading .fi .fi-file, .msg .file.downloading .fi .fi-download { display: none !important; }
+  .msg .file.downloading .fi, .msg .file.done .fi { width: 24px; height: 24px; }
+  .msg .file.downloading .fi .fi-progress { display: flex; align-items: center; justify-content: center; position: relative; width: 24px; height: 24px; }
+  .msg .file.downloading .fi .fi-progress svg { position: absolute; inset: 0; transform: rotate(-90deg); }
+  .msg .file.downloading .fi .fi-progress .ring-bg { fill: none; stroke: var(--border); stroke-width: 3; }
+  .msg .file.downloading .fi .fi-progress .ring-bar { fill: none; stroke: var(--accent-2); stroke-width: 3; stroke-linecap: round; transition: stroke-dashoffset .2s linear; transform-box: fill-box; transform-origin: center; }
+  .msg .file.downloading .fi .fi-progress .ring-bar.indeterminate { animation: fi-spin 1s linear infinite; }
+  .msg .file.downloading .fi .fi-pct { font-size: 7px; font-weight: 700; color: var(--text); position: relative; z-index: 1; }
+  @keyframes fi-spin { from { transform: rotate(-90deg); } to { transform: rotate(270deg); } }
+  .msg .file.done .fi .fi-file, .msg .file.done .fi .fi-download, .msg .file.done .fi .fi-progress { display: none !important; }
+  .msg .file.done .fi .fi-check { display: flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 50%; background: var(--online); color: #fff; }
+  .msg .file .fmeta { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .msg .file .fn { display: block; font-weight: 600; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .msg .file .fs { color: var(--muted); font-size: 10.5px; }
+  .msg .files-time { text-align: right; font-size: 10px; color: var(--muted); margin-top: 1px; }
+  .day-sep { align-self: center; color: var(--muted); font-size: 10.5px; background: var(--panel-2); padding: 3px 10px; border-radius: 20px; margin: 4px 0; }
+
+  #composer { display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--border); background: var(--panel); flex-shrink: 0; align-items: flex-end; }
+  #text { flex: 1; padding: 9px 12px; border: 1px solid var(--border); border-radius: 18px; background: var(--bg); color: var(--text); font-size: 13px; font-family: inherit; resize: none; max-height: 120px; overflow-y: auto; line-height: 1.35; }
+  #text:focus { outline: none; border-color: var(--accent); }
+  #composer .round { width: 34px; height: 34px; border-radius: 50%; border: none; cursor: pointer; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+  #attach { background: var(--bg); border: 1px solid var(--border); color: var(--muted); }
+  #attach:hover { color: var(--text); }
+  #send { background: var(--accent); color: #fff; }
+
+  /* ---- Панель истории ---- */
+  body.history-open #messages, body.history-open #composer { display: none; }
+  /* Панель истории — не мгновенный display:none/flex, а плавный fade+сдвиг поверх остального
+     содержимого. Постоянно в DOM (просто прозрачная и некликабельная, пока не открыта), поэтому
+     transition отрабатывает как положено — в отличие от display, opacity/transform анимируются.
+     Открывается сверху вниз (как выпадающее меню из кнопки в шапке), не снизу вверх — и цветная
+     полоска сверху панели визуально продолжает подсветку активной кнопки, которая её открыла. */
+  #historyPanel {
+    position: absolute; top: 40px; left: 0; right: 0; bottom: 0;
+    display: flex; flex-direction: column; background: var(--bg);
+    border-top: 2px solid transparent;
+    opacity: 0; transform: translateY(-8px); pointer-events: none;
+    transition: opacity .2s ease, transform .2s ease, border-color .2s ease;
+    z-index: 50;
+  }
+  #historyPanel.visible { opacity: 1; transform: translateY(0); pointer-events: auto; border-top-color: var(--accent); }
+  #hpSearchRow { display: flex; align-items: center; gap: 8px; padding: 10px; border-bottom: 1px solid var(--border); background: var(--panel); }
+  #hpSearchRow svg { color: var(--muted); flex-shrink: 0; }
+  #hpSearch { flex: 1; background: var(--bg); border: 1px solid var(--border); border-radius: 20px; padding: 7px 12px; color: var(--text); font-size: 12.5px; }
+  #hpSearch:focus { outline: none; border-color: var(--accent); }
+  #hpBody { flex: 1; display: flex; min-height: 0; }
+  #hpDays { width: 150px; flex-shrink: 0; overflow-y: auto; border-right: 1px solid var(--border); padding: 6px; }
+  #hpDays .mheader { display: flex; align-items: center; gap: 6px; padding: 8px 8px 6px; cursor: pointer; border-radius: 6px; user-select: none; }
+  #hpDays .mheader:hover { background: var(--hover); }
+  #hpDays .mheader .chev { color: var(--muted); display: flex; transition: transform .15s; flex-shrink: 0; }
+  #hpDays .mheader.collapsed .chev { transform: rotate(-90deg); }
+  #hpDays .mheader .mtitle { flex: 1; font-size: 11px; font-weight: 700; color: var(--muted); text-transform: capitalize; }
+  #hpDays .mheader .mcount { font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  #hpDays .mdays.collapsed { display: none; }
+  #hpDays .dbtn { padding: 8px 9px; border-radius: 8px; cursor: pointer; font-size: 12px; margin-bottom: 2px; }
+  #hpDays .dbtn:hover { background: var(--hover); }
+  #hpDays .dbtn.active { background: var(--accent); color: #fff; }
+  #hpDays .dbtn .cnt { display: block; font-size: 10px; color: inherit; opacity: .7; }
+  #hpMessages { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 8px; }
+  #hpEmpty { padding: 30px 14px; text-align: center; color: var(--muted); font-size: 12px; }
+
+  /* ---- Drag-and-drop файлов ---- */
+  #dropOverlay { display: none; position: fixed; inset: 6px; z-index: 500; background: var(--overlay); align-items: center; justify-content: center; flex-direction: column; gap: 10px; border: 3px dashed var(--accent); border-radius: 10px; pointer-events: none; }
+  #dropOverlay.active { display: flex; }
+  #dropOverlay svg { width: 34px; height: 34px; color: var(--accent); }
+  #dropOverlay .dtext { font-size: 14px; font-weight: 700; color: var(--text); }
+
+  /* ---- Модалка выбора способа отправки файлов ---- */
+  .sfp-box { width: min(380px, 90%) !important; }
+  .sfp-list { max-height: 130px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+  .sfp-item { display: flex; justify-content: space-between; gap: 8px; background: var(--panel-2); border-radius: 8px; padding: 7px 10px; font-size: 12px; }
+  .sfp-item .sfp-fn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sfp-item .sfp-fs { color: var(--muted); flex-shrink: 0; }
+  .sfp-split { display: flex; gap: 8px; }
+  .sfp-half { flex: 1; min-width: 0; background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 7px; }
+  .sfp-quick { align-items: center; justify-content: center; cursor: pointer; text-align: center; }
+  .sfp-quick:hover { border-color: var(--accent); background: var(--hover); }
+  .sfp-half-t { font-weight: 700; font-size: 12.5px; display: flex; align-items: center; gap: 6px; }
+  .sfp-quick .sfp-half-t { justify-content: center; }
+  .sfp-half-d { font-size: 10.5px; color: var(--muted); text-align: center; line-height: 1.35; }
+  .sfp-caption input { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 7px 8px; color: var(--text); font-size: 12px; width: 100%; }
+  .sfp-caption input:focus { outline: none; border-color: var(--accent); }
+  .sfp-caption button { background: var(--accent); color: #fff; border: none; border-radius: 6px; padding: 7px; font-size: 11px; font-weight: 600; cursor: pointer; width: 100%; }
+  .sfp-cancel-row { text-align: center; margin-top: 12px; }
+  .sfp-cancel-row button { background: none; border: none; color: var(--muted); font-size: 11.5px; cursor: pointer; padding: 4px; }
+  .sfp-cancel-row button:hover { color: var(--text); }
+  #historyBtn { -webkit-app-region: no-drag; display: flex; align-items: center; gap: 6px; padding: 0 10px; width: auto; height: 28px; border-radius: 8px; font-size: 12px; font-weight: 600; }
+  #historyBtn svg { width: 18px; height: 18px; flex-shrink: 0; }
+  #historyBtn.active { background: var(--accent); color: #fff; }
+  #historyBtn.active:hover { background: var(--accent); }
+</style>
+</head>
+<body>
+<div class="wintitlebar">
+  <div class="who">
+    <div class="dot" id="statusDot"></div>
+    <div class="n" id="label"></div>
+    <div class="s" id="statusLine">Личная переписка</div>
+  </div>
+  <div id="tbExtra" style="-webkit-app-region:no-drag; display:flex; gap:2px; margin-left:auto;">
+    <button class="icon-btn" id="historyBtn"><span></span>История</button>
+  </div>
+  <div class="wctl">
+    <button class="icon-btn" id="wcMin"></button>
+    <button class="icon-btn" id="wcMax"></button>
+    <button class="icon-btn close" id="wcClose"></button>
+  </div>
+</div>
+
+<div id="messages"></div>
+<div id="composer">
+  <button class="round" id="attach" title="Прикрепить файл"></button>
+  <input type="file" id="fileInput" multiple style="display:none">
+  <textarea id="text" placeholder="Написать сообщение..." rows="1"></textarea>
+  <button class="round" id="send" onclick="send()" title="Отправить"></button>
+</div>
+
+<div id="dropOverlay">
+  <span></span>
+  <div class="dtext">Отпустите, чтобы прикрепить</div>
+</div>
+
+<div id="historyPanel">
+  <div id="hpSearchRow"></div>
+  <div id="hpBody">
+    <div id="hpDays"></div>
+    <div id="hpMessages"></div>
+  </div>
+</div>
+
+<script src="ui-kit.js"></script>
+<script>
+const params = new URLSearchParams(location.search);
+const type = params.get('type');       // 'room' | 'dm'
+const id = type === 'dm' ? Number(params.get('id')) : params.get('id');
+const label = params.get('label');
+const token = params.get('token');
+const serverUrl = params.get('serverUrl');
+const me = JSON.parse(localStorage.getItem('me') || 'null');
+
+document.getElementById('label').textContent = label;
+if (type !== 'dm') document.getElementById('statusDot').style.display = 'none';
+if (type === 'room') document.getElementById('statusLine').textContent = 'Общий чат';
+
+// Текст статуса собеседника: для "отошёл" — сколько времени он уже отошёл, а не просто "AFK"
+function formatIdleDuration(idleSince) {
+  if (!idleSince) return '';
+  const mins = Math.max(1, Math.round((Date.now() - idleSince) / 60000));
+  if (mins < 60) return `${mins} мин назад`;
+  const hours = Math.floor(mins / 60);
+  return `${hours} ч назад`;
+}
+function statusLabel(state, idleSince) {
+  if (state === 'active') return 'В сети';
+  if (state === 'idle') return `Отошёл (${formatIdleDuration(idleSince)})`;
+  return 'Не в сети';
+}
+document.getElementById('statusDot').title = statusLabel('offline');
+
+document.getElementById('historyBtn').querySelector('span').innerHTML = uiIcon('history');
+document.getElementById('historyBtn').title = 'Открыть историю переписки';
+document.getElementById('attach').innerHTML = uiIcon('attach');
+document.getElementById('send').innerHTML = uiIcon('send');
+document.querySelector('#dropOverlay span').innerHTML = uiIcon('attach');
+
+async function api(path) {
+  const res = await fetch(serverUrl + path, { headers: { Authorization: 'Bearer ' + token } });
+  return res.json();
+}
+
+function escapeHtml(s) { return s.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
+function escapeAttr(s) { return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+
+function fmtSize(bytes) {
+  if (!bytes) return '';
+  if (bytes < 1024) return bytes + ' Б';
+  if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + ' КБ';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' МБ';
+}
+
+function bubbleHtml(m, { withDate } = {}) {
+  const own = m.from_id === me.id;
+  const d = new Date(m.created_at);
+  const time = d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+  const stamp = withDate ? d.toLocaleDateString('ru-RU') + ' ' + time : time;
+  const files = m.files || [];
+
+  let body = '';
+  if (m.text) body += `<div class="txt selectable" data-raw-text="${escapeAttr(m.text)}">${escapeHtml(m.text)}${files.length ? '' : `<span class="time">${stamp}</span>`}</div>`;
+  if (files.length) {
+    // Все карточки файлов — одинаковой ширины (друг под другом, а не в одну строку с временем
+    // у последней — раньше время отнимало место только у последней карточки, и та казалась
+    // урезанной по сравнению с остальными). Время сообщения — отдельной строкой под всеми файлами.
+    const cards = files.map((f) => {
+      const href = `${serverUrl}${f.url}?token=${token}&name=${encodeURIComponent(f.name || 'файл')}`;
+      return `<a class="file" href="${href}" data-name="${escapeAttr(f.name || 'файл')}"><span class="fi"><span class="fi-file">${uiIcon('file')}</span><span class="fi-download">${uiIcon('download')}</span><span class="fi-progress"><svg viewBox="0 0 24 24"><circle class="ring-bg" cx="12" cy="12" r="10"></circle><circle class="ring-bar" cx="12" cy="12" r="10"></circle></svg><span class="fi-pct"></span></span><span class="fi-check">${uiIcon('check')}</span></span><span class="fmeta"><span class="fn">${escapeHtml(f.name || 'файл')}</span><span class="fs">${fmtSize(f.size)}</span></span></a>`;
+    }).join('');
+    body += `<div class="files-block">${cards}</div><div class="files-time">${stamp}</div>`;
+  }
+  return `<div class="msg${own ? ' own' : ''}"><div class="who">${m.from_user}</div>${body}</div>`;
+}
+
+function addMessage(m) {
+  const box = document.getElementById('messages');
+  const div = document.createElement('div');
+  div.innerHTML = bubbleHtml(m);
+  box.appendChild(div.firstElementChild);
+  box.scrollTop = box.scrollHeight;
+}
+
+// Чат "очищается" визуально каждый день — при обычном открытии показываем только сегодняшние
+// сообщения; вся остальная переписка никуда не пропадает и доступна через кнопку "История".
+function todayRange() {
+  const now = new Date();
+  const since = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  return { since, until: since + 24 * 3600 * 1000 };
+}
+
+async function loadHistory() {
+  const { since, until } = todayRange();
+  const q = `since=${since}&until=${until}`;
+  const items = type === 'room' ? await api(`/api/history/room/${id}?${q}`) : await api(`/api/history/dm/${id}?${q}`);
+  items.forEach(addMessage);
+}
+
+let ws, wsReadyQueue = [];
+function connectWs() {
+  const wsUrl = serverUrl.replace(/^http/, 'ws');
+  ws = new WebSocket(`${wsUrl}?token=${token}&host=${encodeURIComponent(desktop.hostname)}`);
+  // У этого окна своё отдельное подключение к серверу — если оно не будет сообщать свой статус,
+  // сервер посчитает его вечно "активным" и это перекроет настоящий статус AFK от окна ростера
+  // (баг, который был: "Отошёл" не появлялся, пока открыто хоть одно окно чата). Статус на момент
+  // подключения берём реальный, а не всегда "в сети" — иначе на пару секунд перебивало настоящий
+  // AFK, пока не придёт ближайший 15-секундный тик с исправлением.
+  ws.onopen = async () => {
+    const { state } = await desktop.getIdleState();
+    ws.send(JSON.stringify({ type: 'status', state }));
+    wsReadyQueue.forEach(fn => fn());
+    wsReadyQueue = [];
+  };
+  ws.onmessage = (e) => {
+    const data = JSON.parse(e.data);
+    if (data.type === 'presence' && type === 'dm') {
+      const p = data.users[id];
+      const state = p ? p.state : 'offline';
+      document.getElementById('statusDot').className = 'dot ' + state;
+      document.getElementById('statusDot').title = statusLabel(state, p?.idleSince);
+    }
+    if (data.type !== 'message') return;
+    const belongs = type === 'room' ? data.room === id : (data.from_id === id || data.to_id === id);
+    if (belongs) addMessage(data);
+  };
+  ws.onclose = () => setTimeout(connectWs, 2000);
+}
+
+desktop.onIdleState(({ state }) => {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'status', state }));
+});
+
+function sendPayload(payload) {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(payload));
+  else wsReadyQueue.push(() => ws.send(JSON.stringify(payload)));
+}
+
+// Тост должен появляться НАД строкой ввода, а не поверх неё — а высота composer не фиксирована
+// (растёт с многострочным текстом), поэтому отступ считаем от его реальной высоты каждый раз.
+function chatToast(message, opts = {}) {
+  const composerHeight = document.getElementById('composer').offsetHeight;
+  uiToast(message, { ...opts, bottomOffset: composerHeight + 12 });
+}
+
+function send() {
+  const input = document.getElementById('text');
+  const text = input.value.trim();
+  if (!text) return;
+  const payload = type === 'room' ? { type: 'send', room: id, text } : { type: 'send', to: id, text };
+  sendPayload(payload);
+  input.value = '';
+  input.style.height = 'auto'; // сброс авто-роста после отправки — снова однострочное поле
+}
+
+// Enter — отправляет сообщение; Shift+Enter — переносит строку (для этого поле ввода и сделано
+// textarea, а не обычным input, у которого многострочный текст в принципе невозможен).
+const textEl = document.getElementById('text');
+textEl.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+});
+textEl.addEventListener('input', () => {
+  textEl.style.height = 'auto';
+  textEl.style.height = Math.min(textEl.scrollHeight, 120) + 'px';
+});
+
+async function uploadFile(file) {
+  const formHeaders = { Authorization: 'Bearer ' + token, 'Content-Type': 'application/octet-stream' };
+  let res;
+  try {
+    res = await fetch(`${serverUrl}/api/upload?name=${encodeURIComponent(file.name)}`, { method: 'POST', headers: formHeaders, body: file });
+  } catch {
+    throw new Error('Сервер недоступен — проверьте подключение и повторите попытку.');
+  }
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || `Сервер ответил ошибкой (${res.status})`);
+  }
+  return res.json(); // { url, name, size }
+}
+
+// Несколько файлов + подпись (если есть) уходят ОДНИМ сообщением — сервер хранит произвольное
+// число файлов в одной записи, поэтому в ленте это тоже один пузырь, а не россыпь отдельных.
+async function sendFilesWithCaption(files, caption) {
+  let uploaded;
+  try {
+    uploaded = await Promise.all(files.map(uploadFile));
+  } catch (e) {
+    uiAlert(e.message, files.length > 1 ? 'Не удалось отправить файлы' : 'Не удалось отправить файл');
+    return;
+  }
+  const base = type === 'room' ? { type: 'send', room: id, text: caption } : { type: 'send', to: id, text: caption };
+  sendPayload({ ...base, files: uploaded });
+  chatToast(files.length > 1 ? 'Файлы успешно отправлены' : 'Файл успешно отправлен');
+}
+
+// ---------- Модалка выбора способа отправки: быстро или с подписью ----------
+function openSendFilesModal(files) {
+  const count = files.length;
+  const title = count === 1 ? 'Отправить файл' : `Отправить файлы (${count})`;
+  const noun = count === 1 ? 'файл' : 'файлы';
+
+  const overlay = document.createElement('div');
+  overlay.className = 'ui-modal-overlay';
+  const box = document.createElement('div');
+  box.className = 'ui-modal-box sfp-box';
+  box.innerHTML = `
+    <div class="ui-modal-title">${uiIcon('file')} ${title}</div>
+    <div class="sfp-list">${files.map(f => `<div class="sfp-item"><span class="sfp-fn">${escapeHtml(f.name)}</span><span class="sfp-fs">${fmtSize(f.size)}</span></div>`).join('')}</div>
+    <div class="sfp-split">
+      <button class="sfp-half sfp-quick" id="sfpQuick">
+        <div class="sfp-half-t">${uiIcon('send')} Быстро</div>
+        <div class="sfp-half-d">Отправить ${noun} сразу, без подписи</div>
+      </button>
+      <div class="sfp-half sfp-caption">
+        <div class="sfp-half-t">С подписью</div>
+        <input id="sfpCaptionInput" placeholder="Текст к ${noun}у...">
+        <button id="sfpCaptionSend">Отправить</button>
+      </div>
+    </div>
+    <div class="sfp-cancel-row"><button id="sfpCancel">Отмена</button></div>
+  `;
+  overlay.appendChild(box);
+  document.body.appendChild(overlay);
+
+  const close = () => overlay.remove();
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  document.getElementById('sfpCancel').onclick = close;
+  document.getElementById('sfpQuick').onclick = () => { close(); sendFilesWithCaption(files, ''); };
+  const captionInput = document.getElementById('sfpCaptionInput');
+  const sendWithCaption = () => { const caption = captionInput.value.trim(); close(); sendFilesWithCaption(files, caption); };
+  document.getElementById('sfpCaptionSend').onclick = sendWithCaption;
+  captionInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendWithCaption(); });
+  captionInput.focus();
+}
+
+document.getElementById('attach').addEventListener('click', () => document.getElementById('fileInput').click());
+document.getElementById('fileInput').addEventListener('change', (e) => {
+  const files = Array.from(e.target.files || []);
+  e.target.value = '';
+  if (files.length) openSendFilesModal(files);
+});
+
+// ---------- Drag-and-drop: перетащили файлы прямо из проводника в окно чата ----------
+let dragCounter = 0;
+window.addEventListener('dragenter', (e) => {
+  e.preventDefault();
+  if (!e.dataTransfer || ![...e.dataTransfer.types].includes('Files')) return;
+  dragCounter++;
+  document.getElementById('dropOverlay').classList.add('active');
+});
+window.addEventListener('dragover', (e) => e.preventDefault()); // без этого drop не сработает
+window.addEventListener('dragleave', (e) => {
+  e.preventDefault();
+  dragCounter = Math.max(0, dragCounter - 1);
+  if (dragCounter === 0) document.getElementById('dropOverlay').classList.remove('active');
+});
+window.addEventListener('drop', (e) => {
+  e.preventDefault();
+  dragCounter = 0;
+  document.getElementById('dropOverlay').classList.remove('active');
+  const files = Array.from(e.dataTransfer?.files || []);
+  if (files.length) openSendFilesModal(files);
+});
+
+// Файлы, отправленные через правый клик по контакту в ростере (окно чата могло только что открыться) —
+// приходят одним пакетом и уходят одним сообщением, как и любая другая множественная отправка.
+desktop.onFilesToSend((files) => {
+  const base = type === 'room' ? { type: 'send', room: id, text: '' } : { type: 'send', to: id, text: '' };
+  sendPayload({ ...base, files });
+});
+desktop.onShowAlert(({ message, title }) => uiAlert(message, title));
+
+// ---------- История: по дням и полнотекстовый поиск ----------
+let daysCache = [];
+
+function dayLabel(dayStr) {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const [y, m, d] = dayStr.split('-').map(Number);
+  const day = new Date(y, m - 1, d);
+  const diff = Math.round((today - day) / 86400000);
+  if (diff === 0) return 'Сегодня';
+  if (diff === 1) return 'Вчера';
+  return day.toLocaleDateString('ru-RU', { day: '2-digit', month: 'long' });
+}
+function dayRange(dayStr) {
+  const [y, m, d] = dayStr.split('-').map(Number);
+  const since = new Date(y, m - 1, d).getTime();
+  return { since, until: since + 24 * 3600 * 1000 };
+}
+function monthLabel(key) { // key = 'YYYY-MM'
+  const [y, m] = key.split('-').map(Number);
+  const label = new Date(y, m - 1, 1).toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' });
+  return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
+async function openHistoryPanel() {
+  document.body.classList.add('history-open'); // прячет messages/composer сразу — панель поверх и так их закрывает
+  document.getElementById('historyPanel').classList.add('visible'); // а сама панель проявляется плавно
+  document.getElementById('historyBtn').classList.add('active');
+  document.getElementById('historyBtn').title = 'Скрыть историю переписки';
+  const row = document.getElementById('hpSearchRow');
+  row.innerHTML = `${uiIcon('search')}<input id="hpSearch" placeholder="Поиск по всей истории переписки...">`;
+  document.getElementById('hpSearch').addEventListener('input', debounceSearch);
+  await loadDays();
+  if (daysCache.length) selectDay(daysCache[0].day);
+  else document.getElementById('hpMessages').innerHTML = '<div id="hpEmpty">Переписки пока не было</div>';
+}
+function closeHistoryPanel() {
+  document.getElementById('historyPanel').classList.remove('visible'); // сначала плавно скрываем панель...
+  setTimeout(() => document.body.classList.remove('history-open'), 200); // ...и только потом возвращаем messages/composer
+  document.getElementById('historyBtn').classList.remove('active');
+  document.getElementById('historyBtn').title = 'Открыть историю переписки';
+}
+document.getElementById('historyBtn').addEventListener('click', () => {
+  document.body.classList.contains('history-open') ? closeHistoryPanel() : openHistoryPanel();
+});
+
+// Список дней группируем по месяцам (свернуто, кроме самого свежего) — плоский список за год
+// был бы неюзабельным. Быстрый переход к конкретной дате всё равно проще через поиск сверху.
+async function loadDays() {
+  // Смещение часового пояса ЭТОГО компьютера — чтобы дни группировались как на часах у
+  // сотрудника, а не по часовому поясу сервера (getTimezoneOffset() у JS даёт минуты с обратным
+  // знаком, поэтому переворачиваем: для UTC+3 получится +180).
+  const offsetMinutes = -new Date().getTimezoneOffset();
+  daysCache = type === 'room'
+    ? await api(`/api/history/room/${id}/days?offsetMinutes=${offsetMinutes}`)
+    : await api(`/api/history/dm/${id}/days?offsetMinutes=${offsetMinutes}`);
+  const box = document.getElementById('hpDays');
+  box.innerHTML = '';
+  if (!daysCache.length) return;
+
+  const months = new Map(); // 'YYYY-MM' -> [{day,count}, ...]
+  daysCache.forEach(d => {
+    const key = d.day.slice(0, 7);
+    if (!months.has(key)) months.set(key, []);
+    months.get(key).push(d);
+  });
+
+  [...months.entries()].forEach(([key, days], idx) => {
+    const collapsed = idx !== 0; // самый свежий месяц раскрыт сразу, остальные свёрнуты
+    const total = days.reduce((s, d) => s + d.count, 0);
+
+    const header = document.createElement('div');
+    header.className = 'mheader' + (collapsed ? ' collapsed' : '');
+    header.innerHTML = `<span class="chev">${uiIcon('chevron')}</span><span class="mtitle">${monthLabel(key)}</span><span class="mcount">${total}</span>`;
+
+    const list = document.createElement('div');
+    list.className = 'mdays' + (collapsed ? ' collapsed' : '');
+    days.forEach(d => {
+      const btn = document.createElement('div');
+      btn.className = 'dbtn';
+      btn.dataset.day = d.day;
+      btn.innerHTML = `${dayLabel(d.day)}<span class="cnt">${d.count} сообщ.</span>`;
+      btn.onclick = () => selectDay(d.day);
+      list.appendChild(btn);
+    });
+
+    header.onclick = () => { header.classList.toggle('collapsed'); list.classList.toggle('collapsed'); };
+    box.appendChild(header);
+    box.appendChild(list);
+  });
+}
+
+async function selectDay(day) {
+  document.getElementById('hpSearch').value = '';
+  [...document.querySelectorAll('#hpDays .dbtn')].forEach(b => b.classList.toggle('active', b.dataset.day === day));
+  const { since, until } = dayRange(day);
+  const q = `since=${since}&until=${until}`;
+  const items = type === 'room' ? await api(`/api/history/room/${id}?${q}`) : await api(`/api/history/dm/${id}?${q}`);
+  renderHistoryMessages(items, false);
+}
+
+let searchDebounce;
+function debounceSearch(e) {
+  clearTimeout(searchDebounce);
+  const value = e.target.value.trim();
+  if (!value) { if (daysCache.length) selectDay(document.querySelector('#hpDays .dbtn.active')?.dataset.day || daysCache[0].day); return; }
+  searchDebounce = setTimeout(() => runSearch(value), 250);
+}
+async function runSearch(text) {
+  [...document.querySelectorAll('#hpDays .dbtn')].forEach(b => b.classList.remove('active'));
+  const items = type === 'room'
+    ? await api(`/api/history/room/${id}?q=${encodeURIComponent(text)}`)
+    : await api(`/api/history/dm/${id}?q=${encodeURIComponent(text)}`);
+  renderHistoryMessages(items, true);
+}
+
+function renderHistoryMessages(items, withDate) {
+  const box = document.getElementById('hpMessages');
+  if (!items.length) { box.innerHTML = '<div id="hpEmpty">Ничего не найдено</div>'; return; }
+  box.innerHTML = items.map(m => bubbleHtml(m, { withDate })).join('');
+}
+
+// Клик по прикреплённому файлу — скачивание через главный процесс (webContents.downloadURL),
+// а не обычная навигация по ссылке: раньше здесь стоял target="_blank", из-за чего Electron
+// открывал вспомогательное пустое окно, которое не закрывалось после сохранения файла.
+// Кольцо прогресса: circumference = 2πr, r=10 (совпадает с радиусом окружности в разметке выше)
+const RING_CIRCUMFERENCE = 2 * Math.PI * 10;
+const activeDownloads = new Map(); // downloadId -> элемент <a class="file">, который сейчас качается
+
+function startDownloadUi(link) {
+  const id = `dl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  link.classList.remove('done');
+  link.classList.add('downloading');
+  const bar = link.querySelector('.ring-bar');
+  const pct = link.querySelector('.fi-pct');
+  if (bar) {
+    bar.style.strokeDasharray = RING_CIRCUMFERENCE;
+    bar.style.strokeDashoffset = RING_CIRCUMFERENCE; // старт с пустого кольца
+    bar.classList.add('indeterminate'); // пока не пришёл первый процент — крутится неопределённо
+  }
+  if (pct) pct.textContent = '';
+  activeDownloads.set(id, link);
+  return id;
+}
+
+desktop.onDownloadProgress(({ id, state, percent }) => {
+  const link = activeDownloads.get(id);
+  if (!link) return;
+  const bar = link.querySelector('.ring-bar');
+  const pct = link.querySelector('.fi-pct');
+
+  if (state === 'progressing') {
+    if (percent == null) return; // сервер не прислал размер файла — оставляем неопределённое вращение
+    if (bar) {
+      bar.classList.remove('indeterminate');
+      bar.style.strokeDashoffset = RING_CIRCUMFERENCE * (1 - percent / 100);
+    }
+    if (pct) pct.textContent = percent;
+    return;
+  }
+
+  // Готово (успешно или с ошибкой) — показываем галочку на пару секунд и возвращаем обычную иконку
+  activeDownloads.delete(id);
+  link.classList.remove('downloading');
+  if (state === 'completed') {
+    link.classList.add('done');
+    setTimeout(() => link.classList.remove('done'), 2500);
+    chatToast('Файл успешно скачан');
+  } else if (state === 'failed') {
+    uiAlert('Не удалось скачать файл — проверьте подключение и повторите попытку.', 'Ошибка скачивания');
+  }
+});
+
+desktop.onToast(({ message, error }) => chatToast(message, { error }));
+
+function wireFileClicks(container) {
+  container.addEventListener('click', (e) => {
+    const link = e.target.closest('a.file');
+    if (!link) return;
+    e.preventDefault();
+    const id = startDownloadUi(link);
+    desktop.downloadFile(link.href, id);
+  });
+}
+wireFileClicks(document.getElementById('messages'));
+wireFileClicks(document.getElementById('hpMessages'));
+
+// ПКМ по сообщению: на файле — "Сохранить как...", на тексте — "Копировать текст".
+// Реализовано нативным меню Electron (через главный процесс), т.к. буфер обмена и системный
+// диалог "Сохранить как" всё равно должны идти оттуда.
+function wireMessageContextMenu(container) {
+  container.addEventListener('contextmenu', (e) => {
+    const fileLink = e.target.closest('a.file');
+    if (fileLink) {
+      e.preventDefault();
+      desktop.showMessageMenu({ kind: 'file', url: fileLink.href, name: fileLink.dataset.name });
+      return;
+    }
+    const txtEl = e.target.closest('.txt');
+    if (txtEl) {
+      e.preventDefault();
+      desktop.showMessageMenu({ kind: 'text', text: txtEl.dataset.rawText || '' });
+    }
+  });
+}
+wireMessageContextMenu(document.getElementById('messages'));
+wireMessageContextMenu(document.getElementById('hpMessages'));
+
+loadHistory();
+connectWs();
+</script>
+</body>
+</html>
