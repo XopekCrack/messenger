@@ -5,6 +5,13 @@
 <title>Мессенджер</title>
 <link rel="stylesheet" href="theme.css">
 <style>
+  /* chat.html/broadcast.html задают это у себя, а здесь этого объявления не было — из-за чего body
+     не был flex-контейнером, #app/#auth ниже с их "flex: 1" ни на что не опирались (не было
+     flex-родителя) и фактически росли по контенту без предела, а не в границах окна. Из-за этого
+     #profilePanel/#list при уменьшении окна не получали свою настоящую (сжатую) высоту, и их
+     overflow-y:auto было нечему включать — контент просто обрезался снизу без скролла. */
+  body { display: flex; flex-direction: column; }
+
   /* ---- Логин ---- */
   #auth { flex: 1; display: flex; flex-direction: column; justify-content: center; padding: 26px; gap: 8px; }
   #authForm { display: flex; flex-direction: column; gap: 8px; }
@@ -79,6 +86,10 @@
   #profilePanel .field button { padding: 0 14px; border: none; border-radius: 8px; background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #fff; font-weight: 700; cursor: pointer; font-size: 12px; }
   #profilePanel .pp-status { font-size: 11px; min-height: 2px; color: var(--online); }
   #profilePanel .section-title { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; font-weight: 700; }
+  /* Между полем имени и "Тема оформления" уже есть небольшой зазор — его создаёт .pp-status
+     (обычно пустая, но занимает место). После .theme-row такого спейсера нет, поэтому отступ перед
+     "Настройки приложения" без этого правила был заметно меньше — добавляем ровно недостающее. */
+  #profilePanel .theme-row + .section-title { margin-top: 10px; }
   #profilePanel .theme-row { display: flex; gap: 8px; padding: 10px; border-radius: 9px; background: var(--panel); border: 1px solid var(--border); }
   #profilePanel .theme-row .info { flex: 1; }
   #profilePanel .theme-row .t { font-weight: 600; font-size: 12px; }
