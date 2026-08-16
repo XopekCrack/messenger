@@ -74,7 +74,9 @@
   #historyBtn.active:hover { background: var(--accent); }
 
   /* ---- Панель истории по дням/месяцам (как в чате) ---- */
-  body.history-open #composer { display: none; }
+  /* Композер прячется сам, через свой обычный open/close переход (max-height/opacity) — отдельного
+     аварийного display:none поверх него больше нет, чтобы не обрывать эту анимацию на середине,
+     когда историю открывают при открытой форме рассылки (см. openHistoryPanel/setComposerOpen). */
   /* Открывается сверху вниз (не снизу вверх) — и цветная полоска сверху продолжает подсветку
      активной кнопки, которая открыла панель (см. такой же приём в окне чата). */
   #historyPanel {
@@ -175,6 +177,18 @@ document.querySelector('#dropOverlay span').innerHTML = uiIcon('attach');
 
 let pendingFiles = []; // выбранные, но ещё не отправленные файлы (File-объекты)
 
+// Открытие/закрытие самой формы рассылки (без ленты — той управляют отдельно, hideFeedSmoothly/
+// showFeedSmoothly) — общая функция, чтобы openHistoryPanel могла закрыть уже открытую форму без
+// побочного повторного показа ленты (который раньше вызывал заметное мигание при переключении
+// "Написать" -> "История": форма сама возвращала ленту, а openHistoryPanel тут же прятала её снова).
+function setComposerOpen(open) {
+  const btn = document.getElementById('composeBtn');
+  document.getElementById('composer').classList.toggle('open', open);
+  btn.classList.toggle('active', open);
+  btn.title = open ? 'Скрыть форму рассылки' : 'Написать рассылку';
+  if (open) document.getElementById('text').focus();
+}
+
 (async () => {
   canCompose = await checkComposeAccess();
   if (!canCompose) return;
@@ -183,12 +197,10 @@ let pendingFiles = []; // выбранные, но ещё не отправле�
   btn.querySelector('span').innerHTML = uiIcon('send');
   btn.title = 'Написать рассылку';
   btn.addEventListener('click', () => {
-    if (document.body.classList.contains('history-open')) closeHistoryPanel();
-    const open = document.getElementById('composer').classList.toggle('open');
-    btn.classList.toggle('active', open);
-    btn.title = open ? 'Скрыть форму рассылки' : 'Написать рассылку';
+    if (document.getElementById('historyPanel').classList.contains('visible')) closeHistoryPanel();
+    const open = !document.getElementById('composer').classList.contains('open');
+    setComposerOpen(open);
     if (open) hideFeedSmoothly(); else showFeedSmoothly();
-    if (open) document.getElementById('text').focus();
   });
   document.getElementById('attachBtn').innerHTML = uiIcon('attach');
   document.getElementById('attachBtn').addEventListener('click', () => document.getElementById('fileInput').click());
@@ -419,10 +431,10 @@ function monthLabel(key) {
 }
 
 async function openHistoryPanel() {
-  // Композер и история — взаимоисключающие: не должны накладываться друг на друга
-  if (document.getElementById('composer').classList.contains('open')) document.getElementById('composeBtn').click();
+  // Композер и история — взаимоисключающие: не должны накладываться друг на друга. Просто закрываем
+  // форму (без showFeedSmoothly, который вызвал бы клик по "Написать") — ленту всё равно прячем ниже.
+  if (document.getElementById('composer').classList.contains('open')) setComposerOpen(false);
   hideFeedSmoothly();
-  document.body.classList.add('history-open'); // прячет композер сразу (он и так уже закрыт выше) — панель поверх и так его закрывает
   document.getElementById('historyPanel').classList.add('visible'); // а сама панель проявляется плавно
   document.getElementById('historyBtn').classList.add('active');
   document.getElementById('historyBtn').title = 'Скрыть историю';
@@ -435,13 +447,12 @@ async function openHistoryPanel() {
 }
 function closeHistoryPanel() {
   document.getElementById('historyPanel').classList.remove('visible'); // сначала плавно скрываем панель...
-  setTimeout(() => document.body.classList.remove('history-open'), 200); // ...и только потом возвращаем композер
-  showFeedSmoothly();
+  showFeedSmoothly(); // ...и одновременно проявляем ленту обратно
   document.getElementById('historyBtn').classList.remove('active');
   document.getElementById('historyBtn').title = 'Найти рассылку по дате или по тексту';
 }
 document.getElementById('historyBtn').addEventListener('click', () => {
-  document.body.classList.contains('history-open') ? closeHistoryPanel() : openHistoryPanel();
+  document.getElementById('historyPanel').classList.contains('visible') ? closeHistoryPanel() : openHistoryPanel();
 });
 
 async function loadDays() {

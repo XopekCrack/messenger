@@ -53,7 +53,11 @@
   #send { background: var(--accent); color: #fff; }
 
   /* ---- Панель истории ---- */
-  body.history-open #messages, body.history-open #composer { display: none; }
+  /* Сообщения и строка ввода прячутся плавно (fade + сдвиг вниз), а не мгновенным display:none —
+     см. hideChatBodySmoothly/showChatBodySmoothly. Когда переход заканчивается, элемент по-настоящему
+     убирается из раскладки (display:none), иначе остаётся невидимым, но занимающим место. */
+  #messages, #composer { transition: opacity .15s ease, transform .2s ease; }
+  #messages.chat-hidden, #composer.chat-hidden { opacity: 0; pointer-events: none; transform: translateY(14px); }
   /* Панель истории — не мгновенный display:none/flex, а плавный fade+сдвиг поверх остального
      содержимого. Постоянно в DOM (просто прозрачная и некликабельная, пока не открыта), поэтому
      transition отрабатывает как положено — в отличие от display, opacity/transform анимируются.
@@ -449,8 +453,28 @@ function monthLabel(key) { // key = 'YYYY-MM'
   return label.charAt(0).toUpperCase() + label.slice(1);
 }
 
+// Сообщения и строка ввода плавно гаснут и сдвигаются вниз, пока не закончится transition — и только
+// тогда по-настоящему убираются из раскладки (display:none), иначе остаются невидимыми, но
+// занимающими место (тот же приём, что у списка контактов в ростере при открытой панели профиля).
+function hideChatBodySmoothly() {
+  ['messages', 'composer'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el.classList.contains('chat-hidden')) return;
+    el.classList.add('chat-hidden');
+    setTimeout(() => { if (el.classList.contains('chat-hidden')) el.style.display = 'none'; }, 200);
+  });
+}
+function showChatBodySmoothly() {
+  ['messages', 'composer'].forEach((id) => {
+    const el = document.getElementById(id);
+    el.style.display = 'flex'; // оба flex по базовым стилям — сначала возвращаем в раскладку (ещё прозрачным)...
+    void el.offsetHeight; // ...форсируем reflow, чтобы transition не схлопнулся...
+    el.classList.remove('chat-hidden'); // ...и только теперь плавно проявляем
+  });
+}
+
 async function openHistoryPanel() {
-  document.body.classList.add('history-open'); // прячет messages/composer сразу — панель поверх и так их закрывает
+  hideChatBodySmoothly();
   document.getElementById('historyPanel').classList.add('visible'); // а сама панель проявляется плавно
   document.getElementById('historyBtn').classList.add('active');
   document.getElementById('historyBtn').title = 'Скрыть историю переписки';
@@ -463,12 +487,12 @@ async function openHistoryPanel() {
 }
 function closeHistoryPanel() {
   document.getElementById('historyPanel').classList.remove('visible'); // сначала плавно скрываем панель...
-  setTimeout(() => document.body.classList.remove('history-open'), 200); // ...и только потом возвращаем messages/composer
+  showChatBodySmoothly(); // ...и одновременно проявляем сообщения/строку ввода обратно
   document.getElementById('historyBtn').classList.remove('active');
   document.getElementById('historyBtn').title = 'Открыть историю переписки';
 }
 document.getElementById('historyBtn').addEventListener('click', () => {
-  document.body.classList.contains('history-open') ? closeHistoryPanel() : openHistoryPanel();
+  document.getElementById('historyPanel').classList.contains('visible') ? closeHistoryPanel() : openHistoryPanel();
 });
 
 // Список дней группируем по месяцам (свернуто, кроме самого свежего) — плоский список за год
