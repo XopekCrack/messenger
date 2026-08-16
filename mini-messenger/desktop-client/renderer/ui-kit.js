@@ -6,6 +6,17 @@
 // 3) uiAlert/uiConfirm — модальные окна в стиле клиента вместо системных alert/confirm.
 
 (function () {
+  // Пользователь, ЕДИНСТВЕННОЕ активное подключение которого — веб-панель администратора (host из
+  // connectPresenceWs() в public/index.html), физически не может получить ни сообщение, ни файл —
+  // у веб-панели нет интерфейса чата, она только для управления организацией. Писать/отправлять файл
+  // такому человеку бессмысленно, поэтому это запрещено — и в ростере, и в уже открытом окне чата —
+  // пока у него не появится ещё один хост (запущен десктоп-клиент на реальном ПК) вдобавок к веб-панели.
+  window.ADMIN_WEB_HOSTNAME = 'Веб-панель администратора';
+  window.canReceiveMessages = (hosts) => {
+    if (!hosts || !hosts.length) return true; // офлайн — обычный случай, не блокируем: сообщение дождётся его
+    return hosts.some((h) => h !== window.ADMIN_WEB_HOSTNAME);
+  };
+
   const ICONS = {
     minimize: '<svg viewBox="0 0 16 16" width="14" height="14"><rect x="3" y="7.25" width="10" height="1.5" rx="0.75" fill="currentColor"/></svg>',
     close: '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3.5 3.5l9 9m0-9l-9 9"/></svg>',

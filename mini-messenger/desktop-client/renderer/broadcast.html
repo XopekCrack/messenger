@@ -29,8 +29,22 @@
   #attachBtn:hover { color: var(--text); }
   #sendBtn { flex: 1; padding: 10px; border: none; border-radius: 8px; background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #fff; font-weight: 700; cursor: pointer; }
   #composerFiles { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; flex-shrink: 0; }
-  #composerFiles .chip { display: flex; align-items: center; gap: 6px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 20px; padding: 4px 6px 4px 10px; font-size: 11.5px; }
-  #composerFiles .chip button { width: 16px; height: 16px; border: none; background: var(--hover); border-radius: 50%; color: var(--muted); cursor: pointer; display: flex; align-items: center; justify-content: center; }
+  #composerFiles .chip { display: flex; align-items: center; gap: 6px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 20px; padding: 4px 6px 4px 6px; font-size: 11.5px; }
+  #composerFiles .chip button { width: 16px; height: 16px; border: none; background: var(--hover); border-radius: 50%; color: var(--muted); cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  /* Кольцо загрузки файла на сервер — тот же приём, что и у кольца скачивания в ленте (пусто -> % -> галочка/крестик),
+     только меньше и запускается сразу при выборе файла, а не при клике "Отправить всем". */
+  #composerFiles .chip .chip-fi { position: relative; display: flex; align-items: center; justify-content: center; width: 20px; height: 20px; flex-shrink: 0; color: var(--accent-2); }
+  #composerFiles .chip .chip-fi .fi-check, #composerFiles .chip .chip-fi .fi-error { display: none; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 50%; }
+  #composerFiles .chip.done .chip-fi .fi-progress, #composerFiles .chip.error .chip-fi .fi-progress { display: none; }
+  #composerFiles .chip.done .chip-fi .fi-check { display: flex; background: var(--online); color: #fff; }
+  #composerFiles .chip.error .chip-fi .fi-error { display: flex; color: var(--danger); }
+  #composerFiles .chip .fi-progress { display: flex; align-items: center; justify-content: center; position: relative; width: 20px; height: 20px; }
+  #composerFiles .chip .fi-progress svg { position: absolute; inset: 0; width: 20px; height: 20px; transform: rotate(-90deg); }
+  #composerFiles .chip .ring-bg { fill: none; stroke: var(--border); stroke-width: 3; }
+  #composerFiles .chip .ring-bar { fill: none; stroke: var(--accent-2); stroke-width: 3; stroke-linecap: round; transition: stroke-dashoffset .2s linear; transform-box: fill-box; transform-origin: center; }
+  #composerFiles .chip .ring-bar.indeterminate { animation: fi-spin 1s linear infinite; }
+  #composerFiles .chip .fi-pct { font-size: 6.5px; font-weight: 700; color: var(--text); position: relative; z-index: 1; }
+  #composerFiles .chip .chip-fn { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   /* Пока открыт композер ИЛИ панель истории — лента снизу скрывается плавно (opacity), а затем,
      когда переход завершится, по-настоящему убирается из раскладки (display:none) — иначе она
@@ -38,6 +52,11 @@
      область (именно так и было раньше). */
   #feed { flex: 1; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 16px; transition: opacity .15s ease, transform .2s ease; }
   #feed.hidden { opacity: 0; pointer-events: none; transform: translateY(14px); }
+  /* "Сегодня рассылок пока не было" — по умолчанию flex-column прижимает единственного ребёнка
+     к верху (flex-start), из-за чего текст был по центру только горизонтально (text-align), а по
+     вертикали торчал вверху. .empty-state добавляется, только когда лента реально пуста — иначе
+     центрирование сплющило бы обычный многоэлементный список к середине вместо чтения сверху вниз. */
+  #feed.empty-state { justify-content: center; align-items: center; }
 
   .unread-divider { display: flex; align-items: center; gap: 10px; margin: 2px 0; -webkit-app-region: no-drag; }
   .unread-divider::before, .unread-divider::after { content: ''; flex: 1; height: 1px; background: var(--accent); opacity: .35; }
@@ -175,7 +194,12 @@ document.getElementById('historyBtn').querySelector('span').innerHTML = uiIcon('
 document.getElementById('historyBtn').title = 'Найти рассылку по дате или по тексту';
 document.querySelector('#dropOverlay span').innerHTML = uiIcon('attach');
 
-let pendingFiles = []; // выбранные, но ещё не отправленные файлы (File-объекты)
+// Выбранные файлы рассылки — каждый начинает грузиться на сервер СРАЗУ при выборе (не дожидаясь
+// "Отправить всем"), чтобы к моменту отправки текста файлы уже были готовы, а не ждали своей
+// очереди. Элемент: { id, file: File, status: 'uploading'|'done'|'error', percent: number|null,
+// uploaded: {url,name,size}|null }.
+let pendingFiles = [];
+const RING_CIRCUMFERENCE = 2 * Math.PI * 10; // тот же радиус кольца (r=10), что и у кольца скачивания ниже
 
 // Открытие/закрытие самой формы рассылки (без ленты — той управляют отдельно, hideFeedSmoothly/
 // showFeedSmoothly) — общая функция, чтобы openHistoryPanel могла закрыть уже открытую форму без
@@ -186,7 +210,13 @@ function setComposerOpen(open) {
   document.getElementById('composer').classList.toggle('open', open);
   btn.classList.toggle('active', open);
   btn.title = open ? 'Скрыть форму рассылки' : 'Написать рассылку';
-  if (open) document.getElementById('text').focus();
+  // .focus() синхронно считает layout (чтобы прокрутить поле в видимую область), а composer в этот
+  // момент только начинает разворачиваться через max-height/flex-grow (дорогой relayout сам по
+  // себе) — вызванный СРАЗУ при переключении класса .open, focus() форсирует этот layout прямо в
+  // момент старта перехода, из-за чего разворачивание визуально дёргалось/подлагивало. Двойной
+  // requestAnimationFrame откладывает фокус до следующего отрисованного кадра, когда браузер уже
+  // сам посчитал этот layout по расписанию, а не по требованию focus().
+  if (open) requestAnimationFrame(() => requestAnimationFrame(() => document.getElementById('text').focus()));
 }
 
 (async () => {
@@ -205,9 +235,8 @@ function setComposerOpen(open) {
   document.getElementById('attachBtn').innerHTML = uiIcon('attach');
   document.getElementById('attachBtn').addEventListener('click', () => document.getElementById('fileInput').click());
   document.getElementById('fileInput').addEventListener('change', (e) => {
-    pendingFiles.push(...Array.from(e.target.files || []));
+    addPendingFiles(Array.from(e.target.files || []));
     e.target.value = '';
-    renderComposerFiles();
   });
 
   // ---------- Drag-and-drop: перетащили файлы прямо из проводника в окно рассылки ----------
@@ -230,8 +259,7 @@ function setComposerOpen(open) {
     document.getElementById('dropOverlay').classList.remove('active');
     const files = Array.from(e.dataTransfer?.files || []);
     if (!files.length) return;
-    pendingFiles.push(...files);
-    renderComposerFiles();
+    addPendingFiles(files);
     // Перетащили файл — сразу открываем композер, чтобы было видно, что файл подхватился
     if (!document.getElementById('composer').classList.contains('open')) document.getElementById('composeBtn').click();
   });
@@ -253,10 +281,77 @@ function showFeedSmoothly() {
   feed.classList.remove('hidden'); // ...и только теперь плавно проявляем
 }
 
+function chipHtml(entry) {
+  const pct = entry.percent != null ? entry.percent : '';
+  const offset = entry.percent != null ? RING_CIRCUMFERENCE * (1 - entry.percent / 100) : RING_CIRCUMFERENCE;
+  return `<span class="chip ${entry.status}" data-id="${entry.id}">
+    <span class="chip-fi">
+      <span class="fi-progress"><svg viewBox="0 0 24 24"><circle class="ring-bg" cx="12" cy="12" r="10"></circle><circle class="ring-bar${entry.percent == null ? ' indeterminate' : ''}" cx="12" cy="12" r="10" style="stroke-dasharray:${RING_CIRCUMFERENCE};stroke-dashoffset:${offset}"></circle></svg><span class="fi-pct">${pct}</span></span>
+      <span class="fi-check">${uiIcon('check')}</span>
+      <span class="fi-error">${uiIcon('warn')}</span>
+    </span>
+    <span class="chip-fn">${escapeHtml(entry.file.name)}</span>
+    <button data-id="${entry.id}" title="${entry.status === 'error' ? 'Убрать (загрузка не удалась)' : 'Убрать'}">${uiIcon('x')}</button>
+  </span>`;
+}
+
 function renderComposerFiles() {
   const box = document.getElementById('composerFiles');
-  box.innerHTML = pendingFiles.map((f, i) => `<span class="chip">${escapeHtml(f.name)}<button data-i="${i}">${uiIcon('x')}</button></span>`).join('');
-  box.querySelectorAll('button').forEach(b => b.onclick = () => { pendingFiles.splice(Number(b.dataset.i), 1); renderComposerFiles(); });
+  box.innerHTML = pendingFiles.map(chipHtml).join('');
+  box.querySelectorAll('button').forEach(b => b.onclick = () => {
+    pendingFiles = pendingFiles.filter((e) => e.id !== b.dataset.id);
+    renderComposerFiles();
+  });
+  document.getElementById('sendBtn').disabled = pendingFiles.some((e) => e.status === 'uploading');
+}
+
+// Точечно обновляет только кольцо прогресса конкретного чипа — без пересборки всего #composerFiles,
+// иначе на каждый onprogress-тик (их много) все чипы мигали бы и терялся бы фокус/hover.
+function updateChipProgress(entry) {
+  const chip = document.querySelector(`#composerFiles .chip[data-id="${entry.id}"]`);
+  if (!chip) return;
+  const bar = chip.querySelector('.ring-bar');
+  const pct = chip.querySelector('.fi-pct');
+  if (bar) {
+    bar.classList.remove('indeterminate');
+    bar.style.strokeDashoffset = RING_CIRCUMFERENCE * (1 - entry.percent / 100);
+  }
+  if (pct) pct.textContent = entry.percent;
+}
+
+// fetch() в Electron/Chromium не даёт прогресс отправки тела запроса — только XMLHttpRequest умеет
+// upload.onprogress, поэтому загрузка файлов рассылки сделана на нём, а не через fetch, как везде
+// в остальном клиенте.
+function startUpload(entry) {
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', `${serverUrl}/api/upload?name=${encodeURIComponent(entry.file.name)}`);
+  xhr.setRequestHeader('Authorization', 'Bearer ' + token);
+  xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+  xhr.upload.onprogress = (e) => {
+    if (!e.lengthComputable) return;
+    entry.percent = Math.round((e.loaded / e.total) * 100);
+    updateChipProgress(entry);
+  };
+  xhr.onload = () => {
+    if (xhr.status >= 200 && xhr.status < 300) {
+      try { entry.uploaded = JSON.parse(xhr.responseText); entry.status = 'done'; }
+      catch { entry.status = 'error'; }
+    } else {
+      entry.status = 'error';
+    }
+    renderComposerFiles();
+  };
+  xhr.onerror = () => { entry.status = 'error'; renderComposerFiles(); };
+  xhr.send(entry.file);
+}
+
+function addPendingFiles(files) {
+  files.forEach((file) => {
+    const entry = { id: `pf-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, file, status: 'uploading', percent: null, uploaded: null };
+    pendingFiles.push(entry);
+    startUpload(entry);
+  });
+  renderComposerFiles();
 }
 
 async function api(path, opts) {
@@ -266,17 +361,6 @@ async function api(path, opts) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || 'Ошибка запроса');
-  return data;
-}
-
-async function uploadFile(file) {
-  const res = await fetch(`${serverUrl}/api/upload?name=${encodeURIComponent(file.name)}`, {
-    method: 'POST',
-    headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/octet-stream' },
-    body: file,
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `Сервер ответил ошибкой (${res.status})`);
   return data;
 }
 
@@ -313,6 +397,7 @@ async function loadFeed() {
   const { since, until } = todayRange();
   const items = await api(`/api/broadcasts?since=${since}&until=${until}`);
   const feed = document.getElementById('feed');
+  feed.classList.toggle('empty-state', !items.length);
   feed.innerHTML = items.map(itemHtml).join('') || '<div class="empty">Сегодня рассылок пока не было</div>';
   feed.scrollTop = feed.scrollHeight; // сразу показываем самую свежую рассылку, а не листаем сверху
 }
@@ -321,11 +406,15 @@ async function send() {
   const el = document.getElementById('text');
   const text = el.value.trim();
   if (!text && !pendingFiles.length) return;
+  if (pendingFiles.some((e) => e.status === 'uploading')) return; // кнопка и так задизейблена на этот случай
+  if (pendingFiles.some((e) => e.status === 'error')) { uiAlert('Уберите файлы, которые не удалось загрузить (крестик на чипе), или перетащите их заново.'); return; }
   const sendBtn = document.getElementById('sendBtn');
   sendBtn.disabled = true;
   try {
-    const uploaded = await Promise.all(pendingFiles.map(uploadFile));
-    await api('/api/broadcast', { method: 'POST', body: JSON.stringify({ text, files: uploaded }) });
+    // Файлы уже загружены на сервер (см. addPendingFiles/startUpload) — здесь просто собираем
+    // сообщение из готовых { url, name, size }, повторно ничего не грузим.
+    const files = pendingFiles.map((e) => e.uploaded);
+    await api('/api/broadcast', { method: 'POST', body: JSON.stringify({ text, files }) });
     el.value = '';
     pendingFiles = [];
     renderComposerFiles();
@@ -336,11 +425,10 @@ async function send() {
     uiToast('Рассылка успешно отправлена');
     // Живое обновление придёт по тому же WS, что и всем остальным (эхо собственного отправленного
     // сообщения) — отдельно перезапрашивать ленту не нужно, иначе будет два одинаковых пузыря.
-  } catch (e) { uiAlert(e.message); } finally { sendBtn.disabled = false; }
+  } catch (e) { uiAlert(e.message); } finally { sendBtn.disabled = pendingFiles.some((e) => e.status === 'uploading'); }
 }
 
 // Кольцо прогресса скачивания на карточке файла: пусто -> проценты -> галочка (как в окне чата)
-const RING_CIRCUMFERENCE = 2 * Math.PI * 10;
 const activeDownloads = new Map();
 
 function startDownloadUi(link) {
@@ -528,6 +616,7 @@ let programmaticScroll = false; // чтобы наш собственный ав
 function addLiveBroadcast(b) {
   const feed = document.getElementById('feed');
   feed.querySelector('.empty')?.remove();
+  feed.classList.remove('empty-state');
 
   // Раньше полоска показывалась только если document.hasFocus() был false — на практике это
   // ненадёжно (в Electron фокус между окнами не всегда трекается так, как ожидаешь) и полоску

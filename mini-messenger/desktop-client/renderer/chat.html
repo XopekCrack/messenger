@@ -45,8 +45,15 @@
   .day-sep { align-self: center; color: var(--muted); font-size: 10.5px; background: var(--panel-2); padding: 3px 10px; border-radius: 20px; margin: 4px 0; }
 
   #composer { display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--border); background: var(--panel); flex-shrink: 0; align-items: flex-end; }
-  #text { flex: 1; padding: 9px 12px; border: 1px solid var(--border); border-radius: 18px; background: var(--bg); color: var(--text); font-size: 13px; font-family: inherit; resize: none; max-height: 120px; overflow-y: auto; line-height: 1.35; }
-  #text:focus { outline: none; border-color: var(--accent); }
+  /* #text раньше сам был скруглённым (border-radius:18px) и одновременно overflow-y:auto — кастомный
+     ::-webkit-scrollbar (см. theme.css) в Chromium не обрезается border-radius самого элемента, из-за
+     чего прямоугольная полоса скролла торчала за пределы скруглённых углов. Обёртка берёт на себя
+     скругление и overflow:hidden (обрезает), а сам textarea внутри — прямоугольный, со своим
+     скроллом, который обрезается уже обёрткой. */
+  #textWrap { flex: 1; min-width: 0; border: 1px solid var(--border); border-radius: 18px; background: var(--bg); overflow: hidden; }
+  #textWrap:focus-within { border-color: var(--accent); }
+  #text { display: block; width: 100%; padding: 9px 12px; border: none; background: transparent; color: var(--text); font-size: 13px; font-family: inherit; resize: none; max-height: 120px; overflow-y: auto; line-height: 1.35; box-sizing: border-box; }
+  #text:focus { outline: none; }
   #composer .round { width: 34px; height: 34px; border-radius: 50%; border: none; cursor: pointer; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
   #attach { background: var(--bg); border: 1px solid var(--border); color: var(--muted); }
   #attach:hover { color: var(--text); }
@@ -144,7 +151,7 @@
 <div id="composer">
   <button class="round" id="attach" title="Прикрепить файл"></button>
   <input type="file" id="fileInput" multiple style="display:none">
-  <textarea id="text" placeholder="Написать сообщение..." rows="1"></textarea>
+  <div id="textWrap"><textarea id="text" placeholder="Написать сообщение..." rows="1"></textarea></div>
   <button class="round" id="send" onclick="send()" title="Отправить"></button>
 </div>
 
@@ -189,6 +196,22 @@ function statusLabel(state, idleSince) {
   return 'Не в сети';
 }
 document.getElementById('statusDot').title = statusLabel('offline');
+
+// Собеседник, подключённый ТОЛЬКО через веб-панель администратора (без единого реального хоста),
+// не может получить ни сообщение, ни файл — у веб-панели нет интерфейса чата. Композер и вложения
+// блокируются, пока у него не появится ещё один хост (запущен десктоп-клиент на реальном ПК).
+// canReceiveMessages — общая функция из ui-kit.js (используется и в ростере).
+let chatReachable = true;
+function updateComposerReachability(hosts) {
+  if (type !== 'dm') return;
+  chatReachable = canReceiveMessages(hosts);
+  document.getElementById('text').disabled = !chatReachable;
+  document.getElementById('send').disabled = !chatReachable;
+  document.getElementById('attach').disabled = !chatReachable;
+  document.getElementById('text').placeholder = chatReachable
+    ? 'Написать сообщение...'
+    : 'Собеседник недоступен — подключён только через веб-панель администратора';
+}
 
 document.getElementById('historyBtn').querySelector('span').innerHTML = uiIcon('history');
 document.getElementById('historyBtn').title = 'Открыть историю переписки';
@@ -278,6 +301,7 @@ function connectWs() {
       const state = p ? p.state : 'offline';
       document.getElementById('statusDot').className = 'dot ' + state;
       document.getElementById('statusDot').title = statusLabel(state, p?.idleSince);
+      updateComposerReachability(p?.hosts);
     }
     if (data.type !== 'message') return;
     const belongs = type === 'room' ? data.room === id : (data.from_id === id || data.to_id === id);
@@ -303,6 +327,7 @@ function chatToast(message, opts = {}) {
 }
 
 function send() {
+  if (!chatReachable) return;
   const input = document.getElementById('text');
   const text = input.value.trim();
   if (!text) return;
@@ -397,7 +422,7 @@ document.getElementById('attach').addEventListener('click', () => document.getEl
 document.getElementById('fileInput').addEventListener('change', (e) => {
   const files = Array.from(e.target.files || []);
   e.target.value = '';
-  if (files.length) openSendFilesModal(files);
+  if (files.length && chatReachable) openSendFilesModal(files);
 });
 
 // ---------- Drag-and-drop: перетащили файлы прямо из проводника в окно чата ----------
@@ -418,13 +443,16 @@ window.addEventListener('drop', (e) => {
   e.preventDefault();
   dragCounter = 0;
   document.getElementById('dropOverlay').classList.remove('active');
+  if (!chatReachable) return;
   const files = Array.from(e.dataTransfer?.files || []);
   if (files.length) openSendFilesModal(files);
 });
 
 // Файлы, отправленные через правый клик по контакту в ростере (окно чата могло только что открыться) —
 // приходят одним пакетом и уходят одним сообщением, как и любая другая множественная отправка.
+// (Сам пункт меню в ростере уже не появится для недоступного контакта — здесь просто вторая линия защиты.)
 desktop.onFilesToSend((files) => {
+  if (!chatReachable) return;
   const base = type === 'room' ? { type: 'send', room: id, text: '' } : { type: 'send', to: id, text: '' };
   sendPayload({ ...base, files });
 });

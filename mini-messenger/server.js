@@ -230,10 +230,16 @@ const recentBroadcasts = db.prepare(`
   FROM broadcasts b JOIN users u ON u.id = b.from_id
   ORDER BY b.id DESC LIMIT 50
 `);
+// LIMIT 300 + вложенный DESC/ASC: без ограничения тяжёлый день (например, стресс-тест рассылок)
+// отдавал бы клиенту весь день целиком — сотни DOM-узлов с карточками файлов в ленте окна рассылок
+// ощутимо замедляют рендер на слабых машинах. Берём последние 300 (внутренний DESC), но отдаём в
+// привычном хронологическом порядке (внешний ASC), чтобы клиент, как и раньше, не пересортировывал.
 const broadcastsRange = db.prepare(`
-  SELECT b.id, b.text, b.created_at, b.files_json, u.display_name AS from_user
-  FROM broadcasts b JOIN users u ON u.id = b.from_id
-  WHERE b.created_at >= ? AND b.created_at < ? ORDER BY b.id ASC
+  SELECT * FROM (
+    SELECT b.id, b.text, b.created_at, b.files_json, u.display_name AS from_user
+    FROM broadcasts b JOIN users u ON u.id = b.from_id
+    WHERE b.created_at >= ? AND b.created_at < ? ORDER BY b.id DESC LIMIT 300
+  ) ORDER BY id ASC
 `);
 const broadcastsSearch = db.prepare(`
   SELECT b.id, b.text, b.created_at, b.files_json, u.display_name AS from_user

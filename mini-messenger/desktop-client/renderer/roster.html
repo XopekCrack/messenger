@@ -31,10 +31,15 @@
   #app { display: none; flex: 1; flex-direction: column; min-height: 0; }
   #app.active { display: flex; }
 
-  #me-bar, #searchBar { -webkit-app-region: no-drag; display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--panel); min-height: 46px; }
+  /* me-bar/searchBar занимают ОДНУ и ту же ячейку грида (наложены друг на друга) — это даёт честный
+     кроссфейд между ними без "прыжка" высоты, который был бы неизбежен, если бы оба по очереди
+     занимали место в обычном потоке (46px то появлялись, то исчезали бы независимо друг от друга). */
+  #topSlot { display: grid; flex-shrink: 0; }
+  #me-bar, #searchBar { grid-area: 1 / 1; -webkit-app-region: no-drag; display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--panel); min-height: 46px; transition: opacity .15s ease; }
   #me-bar { cursor: pointer; }
   #me-bar:hover { background: var(--panel-2); }
   #me-bar.open { background: var(--panel-2); }
+  #me-bar.searching { opacity: 0; pointer-events: none; }
   #me-bar .chev { margin-left: auto; color: var(--muted); display: flex; flex-shrink: 0; transform: rotate(-90deg); transition: transform .15s; }
   #me-bar.open .chev { transform: rotate(0deg); }
   .avatar { width: 26px; height: 26px; border-radius: 50%; background: linear-gradient(135deg, var(--accent), #8f6ee8); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 10.5px; font-weight: 700; flex-shrink: 0; position: relative; }
@@ -42,11 +47,17 @@
   #me-bar .name { font-weight: 600; font-size: 12.5px; }
   #me-bar .dot { margin-right: -2px; }
 
-  #searchBar { display: none; }
-  #searchBar.active { display: flex; }
+  #searchBar { opacity: 0; pointer-events: none; }
+  #searchBar.active { opacity: 1; pointer-events: auto; }
   #searchBar svg { color: var(--muted); flex-shrink: 0; }
   #searchBar input { flex: 1; background: transparent; border: none; color: var(--text); font-size: 13px; }
   #searchBar input:focus { outline: none; }
+
+  /* "История рассылок" — постоянный элемент (не пересоздаётся при каждом renderList(), в отличие от
+     остального списка), чтобы его можно было плавно прятать/показывать при поиске и открытии
+     профиля через transition, а не мгновенным display:none. */
+  #historyRow { transition: opacity .15s ease, transform .2s ease; }
+  #historyRow.hidden-up { opacity: 0; pointer-events: none; transform: translateY(-14px); }
 
   /* Плавно прячется, пока открыта панель профиля (см. hideListSmoothly/showListSmoothly) — сначала
      гаснет (opacity), а когда переход закончится, по-настоящему убирается из раскладки
@@ -63,8 +74,12 @@
   .row { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 9px; cursor: pointer; transition: background .12s; }
   .row:hover { background: var(--panel-2); }
   .row .n { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
-  .row .me-tag { font-weight: 500; font-size: 10.5px; color: var(--muted); display: none; }
+  .row .me-tag { font-weight: 500; font-size: 10.5px; color: var(--muted); margin-left: 6px; display: none; }
   .row.is-me:hover .me-tag { display: inline; }
+  /* Недоступен для сообщений/файлов — подключён только через веб-панель администратора (см. пункт
+     ниже про canReceiveMessages в ui-kit.js): не кликабелен, приглушён, без обычной подсветки при наведении. */
+  .row.unreachable { opacity: .5; cursor: default; }
+  .row.unreachable:hover { background: transparent; }
   .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--offline); flex-shrink: 0; }
   .dot.active { background: var(--online); box-shadow: 0 0 6px 0 var(--online); }
   .dot.idle { background: var(--afk); box-shadow: 0 0 6px 0 var(--afk); }
@@ -132,12 +147,14 @@
 </div>
 
 <div id="app">
-  <div id="me-bar">
-    <div class="avatar" id="meAvatar"><span class="dot active" id="meDot" title="В сети"></span></div>
-    <div class="name" id="meName"></div>
-    <span class="chev"></span>
+  <div id="topSlot">
+    <div id="me-bar">
+      <div class="avatar" id="meAvatar"><span class="dot active" id="meDot" title="В сети"></span></div>
+      <div class="name" id="meName"></div>
+      <span class="chev"></span>
+    </div>
+    <div id="searchBar"></div>
   </div>
-  <div id="searchBar"></div>
   <div id="profilePanel">
     <div class="inner">
       <div class="field">
@@ -197,6 +214,9 @@
 
       <button id="ppLogoutBtn">Выйти из аккаунта</button>
     </div>
+  </div>
+  <div id="historyRow" class="row" title="Открыть ленту всех рассылок">
+    <div class="badge-icon" id="historyRowIcon"></div><div class="n">История рассылок</div>
   </div>
   <div id="list"></div>
 </div>
@@ -321,6 +341,9 @@ desktop.onIdleState(({ state, idleSeconds }) => {
 
 desktop.onShowAlert(({ message, title }) => uiAlert(message, title));
 
+document.getElementById('historyRowIcon').innerHTML = uiIcon('megaphone');
+document.getElementById('historyRow').onclick = () => desktop.openBroadcast({ token, serverUrl, me: JSON.stringify(me) });
+
 // ---------- Профиль и настройки — панель под me-bar (не отдельное окно) ----------
 document.getElementById('ppThemeDark').innerHTML = uiIcon('moon');
 document.getElementById('ppThemeLight').innerHTML = uiIcon('sun');
@@ -369,6 +392,21 @@ function showListSmoothly() {
   list.classList.remove('hidden'); // ...и только теперь плавно проявляем
 }
 
+// "История рассылок" прячется тем же приёмом, но уезжая вверх — что при открытии профиля (вместе
+// со списком), что при активном поиске (вместе с me-bar, см. setSearchActive).
+function hideHistoryRowUp() {
+  const el = document.getElementById('historyRow');
+  if (el.classList.contains('hidden-up')) return;
+  el.classList.add('hidden-up');
+  setTimeout(() => { if (el.classList.contains('hidden-up')) el.style.display = 'none'; }, 200);
+}
+function showHistoryRow() {
+  const el = document.getElementById('historyRow');
+  el.style.display = 'flex';
+  void el.offsetHeight;
+  el.classList.remove('hidden-up');
+}
+
 function toggleProfilePanel() {
   document.getElementById('profilePanel').classList.contains('open') ? closeProfilePanel() : openProfilePanel();
 }
@@ -379,12 +417,14 @@ async function openProfilePanel() {
   document.getElementById('me-bar').classList.add('open');
   document.getElementById('me-bar').title = 'Скрыть профиль и настройки';
   hideListSmoothly();
+  hideHistoryRowUp();
 }
 function closeProfilePanel() {
   document.getElementById('profilePanel').classList.remove('open');
   document.getElementById('me-bar').classList.remove('open');
   document.getElementById('me-bar').title = 'Профиль и настройки';
   showListSmoothly();
+  showHistoryRow();
 }
 
 document.getElementById('ppSaveName').onclick = async () => {
@@ -437,11 +477,26 @@ function toggleDept(key) {
   renderList();
 }
 
+// Пользователь, у которого сейчас нет ни одного "живого" подключения (только веб-панель
+// администратора или её сочетание с ничем другим), физически не увидит ни сообщение, ни файл —
+// у веб-панели нет интерфейса чата. Писать ему/кидать файл из ростера поэтому запрещено:
+// строка приглушается и перестаёт быть кликабельной (см. canReceiveMessages в ui-kit.js).
+function applyReachability(row, u, p) {
+  const reachable = canReceiveMessages(p.hosts);
+  const chatPayload = { type: 'dm', id: u.id, label: displayNameOf(u), token, serverUrl };
+  row.classList.toggle('unreachable', !reachable);
+  row.title = buildTooltip(p.state, p.idleSince, p.hosts)
+    + (reachable ? '' : '\nСейчас недоступен для сообщений и файлов — подключён только через веб-панель администратора');
+  row.onclick = reachable ? () => desktop.openChat(chatPayload) : null;
+  row.oncontextmenu = reachable
+    ? (e) => { e.preventDefault(); desktop.showUserMenu(chatPayload); }
+    : (e) => e.preventDefault();
+}
+
 function makeUserRow(u) {
   const isMe = u.id === me.id;
   const p = presence[u.id] || { state: 'offline', hosts: [] };
   const name = displayNameOf(u);
-  const chatPayload = { type: 'dm', id: u.id, label: name, token, serverUrl };
   const row = document.createElement('div');
   row.className = 'row' + (isMe ? ' is-me' : '');
   row.dataset.uid = u.id; // нужно для точечного обновления статуса без пересборки всего списка
@@ -450,9 +505,7 @@ function makeUserRow(u) {
     row.title = 'Профиль и настройки';
     row.onclick = toggleProfilePanel;
   } else {
-    row.title = buildTooltip(p.state, p.idleSince, p.hosts);
-    row.onclick = () => desktop.openChat(chatPayload);
-    row.oncontextmenu = (e) => { e.preventDefault(); desktop.showUserMenu(chatPayload); };
+    applyReachability(row, u, p);
   }
   return row;
 }
@@ -471,7 +524,8 @@ function updatePresenceOnly() {
     const p = presence[u.id] || { state: 'offline', hosts: [] };
     const dot = row.querySelector('.dot');
     if (dot) dot.className = 'dot ' + p.state;
-    row.title = buildTooltip(p.state, p.idleSince, p.hosts);
+    if (u.id === me.id) row.title = 'Профиль и настройки';
+    else applyReachability(row, u, p); // пересчитывает и доступность (появился/пропал реальный хост), и тултип
   });
   document.querySelectorAll('#list .section[data-dept]').forEach((section) => {
     const key = section.dataset.dept;
@@ -484,13 +538,6 @@ function updatePresenceOnly() {
 function renderList() {
   const list = document.getElementById('list');
   list.innerHTML = '';
-
-  const historyRow = document.createElement('div');
-  historyRow.className = 'row';
-  historyRow.title = 'Открыть ленту всех рассылок';
-  historyRow.innerHTML = `<div class="badge-icon">${uiIcon('megaphone')}</div><div class="n">История рассылок</div>`;
-  historyRow.onclick = () => desktop.openBroadcast({ token, serverUrl, me: JSON.stringify(me) });
-  list.appendChild(historyRow);
 
   const allUsers = usersCache;
 
@@ -568,7 +615,8 @@ async function refreshMe() {
 // ---------- Скрытый поиск: начал печатать — появилась строка поиска вместо "себя" ----------
 function setSearchActive(active) {
   if (active) closeProfilePanel(); // поиск и профиль — взаимоисключающие состояния верхней части ростера
-  document.getElementById('me-bar').style.display = active ? 'none' : 'flex';
+  document.getElementById('me-bar').classList.toggle('searching', active); // кроссфейд с searchBar — см. #topSlot
+  if (active) hideHistoryRowUp(); else showHistoryRow();
   const bar = document.getElementById('searchBar');
   bar.classList.toggle('active', active);
   if (active && !bar.dataset.built) {
