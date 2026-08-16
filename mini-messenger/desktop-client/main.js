@@ -1,0 +1,446 @@
+// Главный процесс Electron — окна, трей, уведомления, настройки, отправка и скачивание файлов
+const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, Notification, powerMonitor, dialog, session, clipboard } = require('electron');
+const path = require('path');
+const fs = require('fs');
+const http = require('http');
+const https = require('https');
+const { SERVER_URL } = require('./config');
+// Иконка окна/панели задач — в собранном .exe она и так встроена (см. build.win.icon в
+// package.json), но при разработке через `npm start` (без сборки) без этого показывался бы
+// стандартный логотип Electron вместо своего.
+const APP_ICON_PATH = path.join(__dirname, 'build', 'icon.ico');
+
+const SETTINGS_PATH = path.join(app.getPath('userData'), 'settings.json');
+
+const DEFAULT_SETTINGS = {
+  openChatOnMessage: false, // открывать окно чата при новом сообщении (вместо/вместе с уведомлением)
+  rememberWindowSize: false, // запоминать размер окон между запусками
+  alwaysOnTop: false,        // держать окна поверх остальных
+  theme: 'dark',             // 'dark' | 'light'
+  downloadPath: null,        // папка для сохранения файлов по умолчанию (null = каждый раз спрашивать)
+  idleThresholdMinutes: 30,  // сколько минут без активности мыши/клавиатуры -> статус "Отошёл"
+  rosterSize: null,
+  chatSize: null,
+  broadcastSize: null,
+  profileSize: null,
+};
+
+function loadSettings() {
+  try { return { ...DEFAULT_SETTINGS, ...JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8')) }; }
+  catch { return { ...DEFAULT_SETTINGS }; }
+}
+function saveSettings() {
+  try { fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings)); } catch { /* не критично */ }
+}
+let settings = loadSettings();
+
+let rosterWin = null;
+let tray = null;
+let isQuitting = false;
+const namedWins = new Map(); // "type:id" -> BrowserWindow (чаты, рассылки, профиль)
+
+function allWindows() {
+  return [rosterWin, ...namedWins.values()].filter((w) => w && !w.isDestroyed());
+}
+
+function debounce(fn, ms) {
+  let timer;
+  return (...args) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), ms); };
+}
+
+function attachSizePersistence(win, key) {
+  const persist = debounce(() => {
+    if (!settings.rememberWindowSize) return;
+    const [width, height] = win.getSize();
+    settings[key] = { width, height };
+    saveSettings();
+  }, 600);
+  win.on('resize', persist);
+}
+
+// Кнопка "развернуть" в шапке должна показывать актуальную иконку (квадрат / два квадрата),
+// в том числе если окно развернули не кнопкой, а системным способом (Win+Стрелка вверх и т.п.)
+function attachWindowStateEvents(win) {
+  const send = () => { if (!win.isDestroyed()) win.webContents.send('window-state', { maximized: win.isMaximized() }); };
+  win.on('maximize', send);
+  win.on('unmaximize', send);
+}
+
+// Ключ в settings.json для запоминания размера окна — свой на каждый тип окна (чат, рассылки,
+// админка, профиль), не только на чат, как было раньше.
+function sizeKeyForFile(file) {
+  const map = { 'chat.html': 'chatSize', 'broadcast.html': 'broadcastSize', 'profile.html': 'profileSize' };
+  return map[file] || null;
+}
+
+function createWindow(key, file, payload, size) {
+  const existing = namedWins.get(key);
+  if (existing && !existing.isDestroyed()) {
+    existing.focus();
+    return existing;
+  }
+  const sizeKey = sizeKeyForFile(file);
+  const saved = sizeKey && settings.rememberWindowSize ? settings[sizeKey] : null;
+  const win = new BrowserWindow({
+    width: saved?.width || size?.width || 380,
+    height: saved?.height || size?.height || 520,
+    minWidth: size?.minWidth || 300,
+    minHeight: size?.minHeight || 360,
+    frame: false,
+    icon: APP_ICON_PATH,
+    backgroundColor: settings.theme === 'light' ? '#f3f4f7' : '#191b20',
+    alwaysOnTop: settings.alwaysOnTop,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      sandbox: false, // preload использует require('os') для hostname — в песочнице это запрещено
+    },
+  });
+  const qs = new URLSearchParams(payload).toString();
+  win.loadFile(path.join(__dirname, 'renderer', file), { search: qs });
+  namedWins.set(key, win);
+  win.on('closed', () => namedWins.delete(key));
+  attachWindowStateEvents(win);
+  if (sizeKey) attachSizePersistence(win, sizeKey);
+  return win;
+}
+
+function createRoster() {
+  const saved = settings.rememberWindowSize ? settings.rosterSize : null;
+  rosterWin = new BrowserWindow({
+    width: saved?.width || 300,
+    height: saved?.height || 620,
+    minWidth: 260,
+    minHeight: 420,
+    frame: false,
+    icon: APP_ICON_PATH,
+    backgroundColor: settings.theme === 'light' ? '#f3f4f7' : '#191b20',
+    alwaysOnTop: settings.alwaysOnTop,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      sandbox: false,
+    },
+  });
+  rosterWin.loadFile(path.join(__dirname, 'renderer', 'roster.html'));
+  attachSizePersistence(rosterWin, 'rosterSize');
+  attachWindowStateEvents(rosterWin);
+
+  // Не закрываем насовсем — сворачиваем в трей, чтобы приложение продолжало получать сообщения
+  rosterWin.on('close', (e) => {
+    if (!isQuitting) {
+      e.preventDefault();
+      rosterWin.hide();
+    }
+  });
+}
+
+function createTray() {
+  const iconPath = path.join(__dirname, 'tray-icon.png');
+  const icon = nativeImage.createFromPath(iconPath);
+  if (icon.isEmpty()) {
+    // Если видите это в консоли после сборки .exe — значит tray-icon.png не попал в установщик:
+    // проверьте, что он указан в поле "files" секции "build" в package.json
+    console.warn('Иконка трея не найдена или пуста:', iconPath);
+  }
+  tray = new Tray(icon);
+  tray.setToolTip('Мини-мессенджер');
+  const menu = Menu.buildFromTemplate([
+    { label: 'Открыть', click: () => { rosterWin.show(); rosterWin.focus(); } },
+    { type: 'separator' },
+    { label: 'Выход', click: () => { isQuitting = true; app.quit(); } },
+  ]);
+  tray.setContextMenu(menu);
+  tray.on('click', () => {
+    if (rosterWin.isVisible()) rosterWin.focus(); else rosterWin.show();
+  });
+}
+
+// Раз в 15 секунд проверяем реальное системное бездействие (мышь/клавиатура в любом приложении).
+// Рассылаем ВСЕМ открытым окнам, а не только ростеру — у каждого окна чата своё собственное
+// WebSocket-подключение к серверу, и если оно не сообщает свой статус, сервер считает его вечно
+// "активным", а это перекрывает настоящий статус AFK от подключения ростера (баг, который был:
+// статус "отошёл" не появлялся, пока открыто хотя бы одно окно чата).
+// Внимание: в виртуальных машинах (VMware/VirtualBox/Hyper-V) интеграция мыши между хостом и гостем
+// иногда сама генерирует события движения курсора даже без реальных действий пользователя — тогда
+// Windows считает это "активностью", и AFK может не наступать. Это особенность ВМ, а не баг клиента;
+// на физическом ПК определение бездействия использует стандартный Windows API (GetLastInputInfo) и
+// работает корректно. Текущее время простоя показывается во всплывающей подсказке над своим статусом.
+function currentIdleState() {
+  const idleSeconds = powerMonitor.getSystemIdleTime();
+  const thresholdSeconds = (Number(settings.idleThresholdMinutes) || 30) * 60;
+  return { state: idleSeconds >= thresholdSeconds ? 'idle' : 'active', idleSeconds };
+}
+
+function startIdleWatch() {
+  setInterval(() => {
+    const payload = currentIdleState();
+    for (const win of allWindows()) win.webContents.send('idle-state', payload);
+  }, 15000);
+}
+
+// Небольшой POST без внешних зависимостей — нужен, чтобы отправить файл из главного процесса
+// (Electron 22 использует Node 16, где ещё нет глобального fetch)
+function httpPostBuffer(urlStr, buffer, headers) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(urlStr);
+    const lib = u.protocol === 'https:' ? https : http;
+    const req = lib.request({
+      hostname: u.hostname,
+      port: u.port,
+      path: u.pathname + u.search,
+      method: 'POST',
+      headers: { ...headers, 'Content-Length': buffer.length },
+    }, (res) => {
+      let data = '';
+      res.on('data', (c) => { data += c; });
+      res.on('end', () => {
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          try { resolve(JSON.parse(data)); } catch (e) { reject(e); }
+        } else {
+          let msg = `Сервер ответил ${res.statusCode}`;
+          try { msg = JSON.parse(data).error || msg; } catch { /* тело не JSON — оставляем код ответа */ }
+          reject(new Error(msg));
+        }
+      });
+    });
+    req.on('error', reject);
+    req.write(buffer);
+    req.end();
+  });
+}
+
+async function handleSendFile(payload) {
+  const result = await dialog.showOpenDialog(rosterWin, { properties: ['openFile', 'multiSelections'] });
+  if (result.canceled || !result.filePaths.length) return;
+  const win = createWindow(`${payload.type}:${payload.id}`, 'chat.html', payload);
+  const whenReady = () => new Promise((resolve) => {
+    if (win.webContents.isLoading()) win.webContents.once('did-finish-load', resolve);
+    else resolve();
+  });
+  await whenReady();
+  const uploadedFiles = [];
+  for (const filePath of result.filePaths) {
+    try {
+      const buffer = fs.readFileSync(filePath);
+      const name = path.basename(filePath);
+      const uploaded = await httpPostBuffer(
+        `${payload.serverUrl}/api/upload?name=${encodeURIComponent(name)}`,
+        buffer,
+        { Authorization: `Bearer ${payload.token}`, 'Content-Type': 'application/octet-stream' },
+      );
+      uploadedFiles.push(uploaded);
+    } catch (e) {
+      // Диалог именно в окне ростера (renderer), а не системный showErrorBox — чтобы выглядел
+      // как часть клиента, а не как отдельное окно Windows не в теме приложения.
+      if (rosterWin && !rosterWin.isDestroyed()) {
+        rosterWin.webContents.send('show-alert', { message: String(e.message || e), title: 'Не удалось отправить файл' });
+      }
+    }
+  }
+  // Все успешно загруженные файлы уходят одним сообщением, а не россыпью — так же, как при
+  // выборе через кнопку-скрепку или drag-and-drop прямо в окне чата.
+  if (uploadedFiles.length) win.webContents.send('files-to-send', uploadedFiles);
+}
+
+// ---------- IPC от окон ----------
+ipcMain.on('open-chat', (event, payload) => {
+  createWindow(`${payload.type}:${payload.id}`, 'chat.html', payload);
+});
+
+ipcMain.on('open-broadcast', (event, payload) => {
+  createWindow('broadcast', 'broadcast.html', payload, { width: 420, height: 520, minWidth: 360, minHeight: 400 });
+});
+
+ipcMain.on('open-profile', (event, payload) => {
+  createWindow('profile', 'profile.html', payload, { width: 360, height: 640, minWidth: 320, minHeight: 460 });
+});
+
+ipcMain.on('show-user-menu', (event, payload) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  const menu = Menu.buildFromTemplate([
+    { label: `Написать: ${payload.label}`, click: () => createWindow(`${payload.type}:${payload.id}`, 'chat.html', payload) },
+    { label: 'Отправить файл…', click: () => handleSendFile(payload) },
+  ]);
+  menu.popup({ window: win });
+});
+
+// Одноразовое переопределение пути сохранения — см. will-download в app.whenReady() ниже.
+let pendingSaveAsPath = null;
+let pendingSaveAsWin = null;
+// То же самое для отслеживания прогресса конкретного клика "скачать файл" (см. download-file выше).
+let pendingDownloadId = null;
+let pendingDownloadWin = null;
+async function handleSaveFileAs(url, suggestedName, win) {
+  const result = await dialog.showSaveDialog(win, { defaultPath: suggestedName });
+  if (result.canceled || !result.filePath) return;
+  pendingSaveAsPath = result.filePath;
+  pendingSaveAsWin = win;
+  win.webContents.downloadURL(url);
+}
+
+// ПКМ по сообщению в чате/рассылках: копировать текст или сохранить файл в выбранное место
+// (не то же самое, что настройка "папка по умолчанию" — тут именно разовый выбор).
+ipcMain.on('show-message-menu', (event, payload) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  const items = [];
+  if (payload.kind === 'text' && payload.text) {
+    items.push({
+      label: 'Копировать текст',
+      click: () => {
+        clipboard.writeText(payload.text);
+        if (!win.isDestroyed()) win.webContents.send('toast', { message: 'Скопировано в буфер обмена' });
+      },
+    });
+  }
+  if (payload.kind === 'file' && payload.url) {
+    items.push({ label: `Сохранить «${payload.name}» как…`, click: () => handleSaveFileAs(payload.url, payload.name, win) });
+  }
+  if (!items.length) return;
+  Menu.buildFromTemplate(items).popup({ window: win });
+});
+
+ipcMain.on('window-action', (event, action) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win) return;
+  if (action === 'minimize') win.minimize();
+  if (action === 'maximize') { win.isMaximized() ? win.unmaximize() : win.maximize(); }
+  if (action === 'close') win.close();
+});
+
+// Скачивание прикреплённого файла: через главный процесс, а не обычной навигацией по ссылке —
+// иначе (при target="_blank") Electron открывал вспомогательное пустое окно, которое зависало
+// после сохранения. Имя файла сервер уже присылает верным через Content-Disposition.
+// downloadId — метка от рендерера, чтобы потом вернуть прогресс скачивания именно в тот файл,
+// по которому кликнули (см. will-download ниже) — карточка файла в чате превращается в кольцо
+// прогресса с процентами, а по завершении — в галочку.
+ipcMain.on('download-file', (event, url, downloadId) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  pendingDownloadId = downloadId || null;
+  pendingDownloadWin = win;
+  win.webContents.downloadURL(url);
+});
+
+ipcMain.handle('pick-download-folder', async (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  const result = await dialog.showOpenDialog(win, { properties: ['openDirectory'] });
+  if (result.canceled || !result.filePaths.length) return null;
+  return result.filePaths[0];
+});
+
+ipcMain.handle('get-server-url', () => SERVER_URL);
+// Реальный статус простоя ПРЯМО СЕЙЧАС (не дожидаясь ближайшего 15-секундного тика) — нужен в
+// момент открытия нового WS-подключения, чтобы оно сразу сообщило правильный статус, а не
+// безусловно "в сети", даже если человек на самом деле давно отошёл (см. комментарий у onopen
+// в roster.html/chat.html).
+ipcMain.handle('get-idle-state', () => currentIdleState());
+ipcMain.handle('get-settings', () => settings);
+ipcMain.on('set-settings', (event, partial) => {
+  settings = { ...settings, ...partial };
+  saveSettings();
+  if ('alwaysOnTop' in partial) {
+    for (const win of allWindows()) win.setAlwaysOnTop(settings.alwaysOnTop);
+  }
+  // Тема (и в перспективе другие настройки внешнего вида) должны применяться сразу во всех открытых
+  // окнах, не только в том, где их поменяли — иначе пришлось бы перезапускать каждое окно вручную.
+  for (const win of allWindows()) win.webContents.send('settings-changed', settings);
+});
+
+// Выход из аккаунта: чистим localStorage ростера, закрываем все окна кроме него, возвращаем на экран входа
+ipcMain.on('logout', () => {
+  for (const win of namedWins.values()) { if (!win.isDestroyed()) win.close(); }
+  if (rosterWin && !rosterWin.isDestroyed()) {
+    rosterWin.webContents.executeJavaScript('localStorage.clear(); location.reload();');
+  }
+});
+
+// Показ системного уведомления по входящему сообщению/рассылке (или открытие окна чата, если включена настройка)
+ipcMain.on('notify', (event, payload) => {
+  const { title, body, openPayload } = payload;
+  // Раньше notify умел открывать только окно чата — рассылки просто присылали Windows-уведомление
+  // без возможности сразу открыть саму рассылку. Теперь openPayload сам указывает, какой файл
+  // открывать (chat.html по умолчанию, либо broadcast.html), так что механизм общий для обоих.
+  const file = openPayload?.file || 'chat.html';
+  const key = !openPayload ? null : (file === 'broadcast.html' ? 'broadcast' : `${openPayload.type}:${openPayload.id}`);
+  const winSize = file === 'broadcast.html' ? { width: 420, height: 520, minWidth: 360, minHeight: 400 } : undefined;
+
+  if (settings.openChatOnMessage && openPayload) {
+    const win = createWindow(key, file, openPayload, winSize);
+    win.show();
+    win.focus();
+    return; // само появление окна уже служит уведомлением
+  }
+
+  const targetWin = key ? namedWins.get(key) : null;
+  if (targetWin && !targetWin.isDestroyed() && targetWin.isFocused()) return; // уже читает этот чат — не дублируем
+
+  const n = new Notification({ title, body });
+  n.on('click', () => {
+    if (openPayload) { const w = createWindow(key, file, openPayload, winSize); w.show(); w.focus(); }
+    else { rosterWin.show(); rosterWin.focus(); }
+  });
+  n.show();
+});
+
+app.whenReady().then(() => {
+  createRoster();
+  createTray();
+  startIdleWatch();
+
+  // Путь для сохранения файлов по умолчанию (настройки клиента). Если задан — сохраняем сразу
+  // туда без диалога "Сохранить как"; если нет — Electron сам покажет системный диалог с верно
+  // подставленным именем файла (сервер присылает его через Content-Disposition).
+  // Если пользователь явно выбрал "Сохранить как..." через ПКМ на файле — pendingSaveAsPath на
+  // один раз перебивает и путь по умолчанию, и обычный диалог (см. handleSaveFileAs ниже).
+  session.defaultSession.on('will-download', (event, item) => {
+    const downloadId = pendingDownloadId;
+    const progressWin = pendingDownloadWin;
+    pendingDownloadId = null;
+    pendingDownloadWin = null;
+    const saveAsWin = pendingSaveAsPath ? pendingSaveAsWin : null; // запоминаем ДО очистки ниже
+
+    if (pendingSaveAsPath) {
+      item.setSavePath(pendingSaveAsPath);
+      pendingSaveAsPath = null;
+      pendingSaveAsWin = null;
+    } else if (settings.downloadPath) {
+      try {
+        const dest = path.join(settings.downloadPath, item.getFilename());
+        item.setSavePath(dest);
+      } catch { /* папка недоступна/удалена — покажется обычный диалог сохранения */ }
+    }
+
+    if (downloadId && progressWin && !progressWin.isDestroyed()) {
+      const send = (payload) => { if (!progressWin.isDestroyed()) progressWin.webContents.send('download-progress', { id: downloadId, ...payload }); };
+      item.on('updated', (e, state) => {
+        if (state !== 'progressing' || item.isPaused()) return;
+        const total = item.getTotalBytes();
+        const received = item.getReceivedBytes();
+        send({ state: 'progressing', percent: total > 0 ? Math.round((received / total) * 100) : null });
+      });
+      item.once('done', (e, state) => {
+        send({ state: state === 'completed' ? 'completed' : 'failed' });
+      });
+    } else if (saveAsWin && !saveAsWin.isDestroyed()) {
+      // "Сохранить как..." из контекстного меню — своего кольца прогресса на карточке файла тут
+      // нет (это разовое сохранение в произвольное место), но об успехе/ошибке всё равно сообщаем.
+      item.once('done', (e, state) => {
+        if (saveAsWin.isDestroyed()) return;
+        saveAsWin.webContents.send('toast', state === 'completed'
+          ? { message: 'Файл успешно скачан' }
+          : { message: 'Не удалось скачать файл', error: true });
+      });
+    }
+  });
+});
+
+app.on('window-all-closed', () => {
+  // Приложение живёт в трее — не выходим при закрытии окон
+});
+
+app.on('activate', () => {
+  if (!rosterWin || rosterWin.isDestroyed()) createRoster();
+  else rosterWin.show();
+});
+
+app.on('before-quit', () => { isQuitting = true; });

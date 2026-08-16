@@ -1,0 +1,8 @@
+node_modules/
+messenger.db
+messenger.db-shm
+messenger.db-wal
+uploads/
+bootstrap-admin.js
+.env
+desktop-client/dist/
