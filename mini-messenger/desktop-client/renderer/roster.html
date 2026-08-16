@@ -27,7 +27,9 @@
   #me-bar, #searchBar { -webkit-app-region: no-drag; display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--panel); min-height: 46px; }
   #me-bar { cursor: pointer; }
   #me-bar:hover { background: var(--panel-2); }
-  #me-bar .chev { margin-left: auto; color: var(--muted); display: flex; flex-shrink: 0; transform: rotate(-90deg); }
+  #me-bar.open { background: var(--panel-2); }
+  #me-bar .chev { margin-left: auto; color: var(--muted); display: flex; flex-shrink: 0; transform: rotate(-90deg); transition: transform .15s; }
+  #me-bar.open .chev { transform: rotate(0deg); }
   .avatar { width: 26px; height: 26px; border-radius: 50%; background: linear-gradient(135deg, var(--accent), #8f6ee8); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 10.5px; font-weight: 700; flex-shrink: 0; position: relative; }
   .avatar .dot { position: absolute; right: -2px; bottom: -2px; border: 2px solid var(--panel); -webkit-app-region: no-drag; }
   #me-bar .name { font-weight: 600; font-size: 12.5px; }
@@ -59,6 +61,43 @@
   .dot.idle { background: var(--afk); box-shadow: 0 0 6px 0 var(--afk); }
   .badge-icon { width: 26px; height: 26px; border-radius: 8px; background: var(--panel-2); color: var(--accent-2); display:flex; align-items:center; justify-content:center; flex-shrink:0; }
   .empty-hint { padding: 20px 12px; text-align: center; color: var(--muted); font-size: 12px; }
+
+  /* ---- Профиль и настройки — раскрывающаяся панель под me-bar, а не отдельное окно ----
+     Растёт от 0 своей естественной высотой (не flex:1, в отличие от композера рассылки) —
+     поэтому не подменяет список контактов, а именно теснит его: #list ниже сам сжимается,
+     т.к. это flex-элемент с overflow:auto (его automatic minimum size по спеке = 0). */
+  #profilePanel { display: flex; flex-direction: column; max-height: 0; opacity: 0; overflow: hidden; flex-shrink: 1; border-bottom: 2px solid transparent; transition: max-height .25s ease, opacity .2s ease, border-color .2s ease; }
+  #profilePanel.open { max-height: 640px; opacity: 1; border-bottom-color: var(--accent); }
+  /* flex:1 + min-height:0, а не просто max-height — чтобы .inner всегда точно совпадал с реальной
+     высотой #profilePanel (которая на маленьком окне может оказаться меньше 640px из-за
+     flex-shrink), и внутренний скролл включался именно на неё, а не обрезал контент молча. */
+  #profilePanel .inner { flex: 1; min-height: 0; padding: 14px; display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
+  #profilePanel .phead { display: flex; align-items: center; gap: 10px; }
+  #profilePanel .avatar { width: 38px; height: 38px; font-size: 14px; }
+  #profilePanel .login { color: var(--muted); font-size: 11.5px; }
+  #profilePanel .field { display: flex; gap: 8px; }
+  #profilePanel .field input { flex: 1; min-width: 0; padding: 9px 11px; background: var(--panel-2); border: 1px solid var(--border); color: var(--text); border-radius: 8px; font-size: 12.5px; }
+  #profilePanel .field input:focus { outline: none; border-color: var(--accent); }
+  #profilePanel .field button { padding: 0 14px; border: none; border-radius: 8px; background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #fff; font-weight: 700; cursor: pointer; font-size: 12px; }
+  #profilePanel .pp-status { font-size: 11px; min-height: 13px; color: var(--online); }
+  #profilePanel .section-title { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; font-weight: 700; margin: 4px 0 0; }
+  #profilePanel .theme-row { display: flex; gap: 8px; padding: 10px; border-radius: 9px; background: var(--panel-2); border: 1px solid var(--border); }
+  #profilePanel .theme-row .info { flex: 1; }
+  #profilePanel .theme-row .t { font-weight: 600; font-size: 12px; }
+  #profilePanel .theme-row .d { color: var(--muted); font-size: 11px; margin-top: 2px; line-height: 1.35; }
+  #profilePanel .theme-switch { display: flex; align-items: center; gap: 4px; background: var(--bg); border-radius: 20px; padding: 3px; flex-shrink: 0; align-self: center; }
+  #profilePanel .theme-switch button { width: 28px; height: 28px; border-radius: 50%; border: none; background: transparent; color: var(--muted); cursor: pointer; display: flex; align-items: center; justify-content: center; }
+  #profilePanel .theme-switch button.active { background: var(--accent); color: #fff; }
+  #profilePanel .option { display: flex; align-items: flex-start; gap: 10px; padding: 10px; border-radius: 9px; background: var(--panel-2); border: 1px solid var(--border); cursor: pointer; }
+  #profilePanel .option:hover { background: var(--hover); }
+  #profilePanel .option input { margin-top: 2px; width: 15px; height: 15px; accent-color: var(--accent); flex-shrink: 0; }
+  #profilePanel .option .t { font-weight: 600; font-size: 12px; }
+  #profilePanel .option .d { color: var(--muted); font-size: 11px; margin-top: 2px; line-height: 1.35; }
+  #profilePanel #ppDownloadPathLabel { flex: 1; min-width: 0; font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 7px 9px; }
+  #profilePanel #ppPickFolderBtn { width: auto; padding: 0 10px; gap: 6px; display: flex; }
+  #profilePanel #ppIdleThresholdMinutes { width: 70px; padding: 7px 9px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 12.5px; }
+  #profilePanel #ppLogoutBtn { margin-top: 2px; padding: 9px; border: 1px solid var(--danger); border-radius: 8px; background: transparent; color: var(--danger); font-weight: 600; cursor: pointer; }
+  #profilePanel #ppLogoutBtn:hover { background: var(--danger); color: #fff; }
 </style>
 </head>
 <body>
@@ -90,6 +129,70 @@
     <span class="chev"></span>
   </div>
   <div id="searchBar"></div>
+  <div id="profilePanel">
+    <div class="inner">
+      <div class="phead">
+        <div class="avatar" id="ppAvatar"></div>
+        <div class="login" id="ppLoginLine"></div>
+      </div>
+      <div class="field">
+        <input id="ppDisplayName" placeholder="Отображаемое имя">
+        <button id="ppSaveName">Сохранить</button>
+      </div>
+      <div class="pp-status" id="ppStatus"></div>
+
+      <div class="section-title">Тема оформления</div>
+      <div class="theme-row">
+        <div class="info">
+          <div class="t">Тёмная / светлая</div>
+          <div class="d">Применяется сразу ко всем открытым окнам клиента.</div>
+        </div>
+        <div class="theme-switch">
+          <button id="ppThemeDark" title="Тёмная"></button>
+          <button id="ppThemeLight" title="Светлая"></button>
+        </div>
+      </div>
+
+      <div class="section-title">Настройки приложения</div>
+      <label class="option">
+        <input type="checkbox" id="ppOpenChatOnMessage">
+        <div><div class="t">Открывать окно чата при новых сообщениях</div><div class="d">Вместо системного уведомления сразу откроется и покажется окно с новым сообщением.</div></div>
+      </label>
+      <label class="option">
+        <input type="checkbox" id="ppRememberWindowSize">
+        <div><div class="t">Запоминать размер окон</div><div class="d">Ростер и окна чатов будут открываться с тем размером, который вы задали в последний раз.</div></div>
+      </label>
+      <label class="option">
+        <input type="checkbox" id="ppAlwaysOnTop">
+        <div><div class="t">Поверх остальных окон</div><div class="d">Окна мессенджера всегда будут отображаться над другими приложениями.</div></div>
+      </label>
+
+      <div class="theme-row" style="flex-direction:column; align-items:stretch; gap:8px;">
+        <div class="info">
+          <div class="t">Порог статуса "Отошёл"</div>
+          <div class="d">Через сколько минут без движения мыши/клавиатуры статус переключается на "Отошёл".</div>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <input type="number" id="ppIdleThresholdMinutes" min="1" max="240" step="1">
+          <span style="color:var(--muted); font-size:11.5px;">мин.</span>
+        </div>
+      </div>
+
+      <div class="theme-row" style="flex-direction:column; align-items:stretch; gap:8px;">
+        <div class="info">
+          <div class="t">Папка для сохранения файлов</div>
+          <div class="d">Если указана — файлы из чата будут сразу сохраняться сюда, без диалога "Сохранить как".</div>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <div id="ppDownloadPathLabel"></div>
+          <button id="ppPickFolderBtn" class="icon-btn" title="Выбрать папку">Выбрать</button>
+          <button id="ppClearFolderBtn" class="icon-btn" title="Спрашивать каждый раз"></button>
+        </div>
+      </div>
+
+      <button id="ppLogoutBtn">Выйти из аккаунта</button>
+    </div>
+  </div>
   <div id="list"></div>
 </div>
 
@@ -213,6 +316,96 @@ desktop.onIdleState(({ state, idleSeconds }) => {
 
 desktop.onShowAlert(({ message, title }) => uiAlert(message, title));
 
+// ---------- Профиль и настройки — панель под me-bar (не отдельное окно) ----------
+document.getElementById('ppThemeDark').innerHTML = uiIcon('moon');
+document.getElementById('ppThemeLight').innerHTML = uiIcon('sun');
+document.getElementById('ppPickFolderBtn').prepend(document.createRange().createContextualFragment(uiIcon('folder')));
+document.getElementById('ppClearFolderBtn').innerHTML = uiIcon('x');
+
+const PP_CHECKBOX_IDS = [
+  ['ppOpenChatOnMessage', 'openChatOnMessage'],
+  ['ppRememberWindowSize', 'rememberWindowSize'],
+  ['ppAlwaysOnTop', 'alwaysOnTop'],
+];
+
+function paintProfileTheme(theme) {
+  document.getElementById('ppThemeDark').classList.toggle('active', theme !== 'light');
+  document.getElementById('ppThemeLight').classList.toggle('active', theme === 'light');
+}
+function paintProfileDownloadPath(p) {
+  document.getElementById('ppDownloadPathLabel').textContent = p || 'Каждый раз спрашивать, куда сохранить';
+  document.getElementById('ppDownloadPathLabel').title = p || '';
+}
+
+async function loadProfilePanel() {
+  document.getElementById('ppAvatar').textContent = initials(displayNameOf(me));
+  document.getElementById('ppLoginLine').textContent = 'Логин: ' + me.username;
+  document.getElementById('ppDisplayName').value = displayNameOf(me);
+  document.getElementById('ppStatus').textContent = '';
+
+  const settings = await desktop.getSettings();
+  PP_CHECKBOX_IDS.forEach(([id, key]) => { document.getElementById(id).checked = !!settings[key]; });
+  paintProfileTheme(settings.theme);
+  paintProfileDownloadPath(settings.downloadPath);
+  document.getElementById('ppIdleThresholdMinutes').value = settings.idleThresholdMinutes || 30;
+}
+
+function toggleProfilePanel() {
+  document.getElementById('profilePanel').classList.contains('open') ? closeProfilePanel() : openProfilePanel();
+}
+async function openProfilePanel() {
+  if (searchQuery) { searchQuery = ''; setSearchActive(false); renderList(); } // поиск и профиль — взаимоисключающие
+  await loadProfilePanel();
+  document.getElementById('profilePanel').classList.add('open');
+  document.getElementById('me-bar').classList.add('open');
+  document.getElementById('me-bar').title = 'Скрыть профиль и настройки';
+}
+function closeProfilePanel() {
+  document.getElementById('profilePanel').classList.remove('open');
+  document.getElementById('me-bar').classList.remove('open');
+  document.getElementById('me-bar').title = 'Профиль и настройки';
+}
+
+document.getElementById('ppSaveName').onclick = async () => {
+  const status = document.getElementById('ppStatus');
+  const display_name = document.getElementById('ppDisplayName').value.trim();
+  if (!display_name) { status.style.color = 'var(--danger)'; status.textContent = 'Введите имя'; return; }
+  try {
+    await api('/api/me', { method: 'PATCH', body: JSON.stringify({ display_name }) });
+    me.display_name = display_name;
+    localStorage.setItem('me', JSON.stringify(me));
+    document.getElementById('meName').textContent = displayNameOf(me);
+    document.getElementById('ppAvatar').textContent = initials(displayNameOf(me));
+    status.style.color = 'var(--online)';
+    status.textContent = 'Сохранено';
+  } catch (e) {
+    status.style.color = 'var(--danger)';
+    status.textContent = e.message || 'Ошибка';
+  }
+};
+
+PP_CHECKBOX_IDS.forEach(([id, key]) => {
+  document.getElementById(id).addEventListener('change', (e) => desktop.setSettings({ [key]: e.target.checked }));
+});
+document.getElementById('ppThemeDark').onclick = () => { desktop.setSettings({ theme: 'dark' }); paintProfileTheme('dark'); };
+document.getElementById('ppThemeLight').onclick = () => { desktop.setSettings({ theme: 'light' }); paintProfileTheme('light'); };
+document.getElementById('ppPickFolderBtn').onclick = async () => {
+  const folder = await desktop.pickDownloadFolder();
+  if (folder) { desktop.setSettings({ downloadPath: folder }); paintProfileDownloadPath(folder); }
+};
+document.getElementById('ppClearFolderBtn').onclick = () => { desktop.setSettings({ downloadPath: null }); paintProfileDownloadPath(null); };
+document.getElementById('ppIdleThresholdMinutes').addEventListener('change', (e) => {
+  const mins = Math.min(240, Math.max(1, Number(e.target.value) || 30));
+  e.target.value = mins;
+  desktop.setSettings({ idleThresholdMinutes: mins });
+});
+document.getElementById('ppLogoutBtn').onclick = async () => {
+  const ok = await uiConfirm('Вы уверены, что хотите выйти из аккаунта на этом компьютере?', {
+    title: 'Выход из аккаунта', okText: 'Выйти', danger: true,
+  });
+  if (ok) desktop.logout();
+};
+
 function deptOnlineCount(users) {
   const on = users.filter(u => { const s = (presence[u.id] || {}).state; return s === 'active' || s === 'idle'; }).length;
   return `${on}/${users.length}`;
@@ -235,7 +428,7 @@ function makeUserRow(u) {
   row.innerHTML = `<div class="dot ${p.state}"></div><div class="n">${name}${isMe ? ' <span class="me-tag">это вы</span>' : ''}</div>`;
   if (isMe) {
     row.title = 'Профиль и настройки';
-    row.onclick = () => desktop.openProfile({ token, serverUrl, me: JSON.stringify(me) });
+    row.onclick = toggleProfilePanel;
   } else {
     row.title = buildTooltip(p.state, p.idleSince, p.hosts);
     row.onclick = () => desktop.openChat(chatPayload);
@@ -354,6 +547,7 @@ async function refreshMe() {
 
 // ---------- Скрытый поиск: начал печатать — появилась строка поиска вместо "себя" ----------
 function setSearchActive(active) {
+  if (active) closeProfilePanel(); // поиск и профиль — взаимоисключающие состояния верхней части ростера
   document.getElementById('me-bar').style.display = active ? 'none' : 'flex';
   const bar = document.getElementById('searchBar');
   bar.classList.toggle('active', active);
@@ -376,7 +570,12 @@ document.addEventListener('keydown', (e) => {
   const typingElsewhere = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA') && active.id !== 'searchInput';
   if (typingElsewhere) return;
 
-  if (e.key === 'Escape') { e.preventDefault(); searchQuery = ''; setSearchActive(false); renderList(); return; }
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    if (document.getElementById('profilePanel').classList.contains('open')) { closeProfilePanel(); return; }
+    searchQuery = ''; setSearchActive(false); renderList();
+    return;
+  }
   if (e.key === 'Backspace') {
     e.preventDefault(); // иначе на пустом searchQuery Electron может воспринять Backspace как "назад"
     if (!searchQuery) return;
@@ -403,7 +602,7 @@ async function startApp() {
   document.getElementById('meAvatar').prepend(initials(displayNameOf(me)));
   document.getElementById('meName').textContent = displayNameOf(me);
   document.querySelector('#me-bar .chev').innerHTML = uiIcon('chevron');
-  document.getElementById('me-bar').onclick = () => desktop.openProfile({ token, serverUrl, me: JSON.stringify(me) });
+  document.getElementById('me-bar').onclick = toggleProfilePanel;
   document.getElementById('me-bar').title = 'Профиль и настройки';
   await refreshUsers();
   connectWs();

@@ -5,7 +5,6 @@ contextBridge.exposeInMainWorld('desktop', {
   hostname: os.hostname(),
   openChat: (payload) => ipcRenderer.send('open-chat', payload),
   openBroadcast: (payload) => ipcRenderer.send('open-broadcast', payload),
-  openProfile: (payload) => ipcRenderer.send('open-profile', payload),
   showUserMenu: (payload) => ipcRenderer.send('show-user-menu', payload),
   showMessageMenu: (payload) => ipcRenderer.send('show-message-menu', payload),
   windowAction: (action) => ipcRenderer.send('window-action', action),
