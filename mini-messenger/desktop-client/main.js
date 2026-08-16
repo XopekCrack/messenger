@@ -22,7 +22,6 @@ const DEFAULT_SETTINGS = {
   rosterSize: null,
   chatSize: null,
   broadcastSize: null,
-  profileSize: null,
 };
 
 function loadSettings() {
@@ -37,7 +36,7 @@ let settings = loadSettings();
 let rosterWin = null;
 let tray = null;
 let isQuitting = false;
-const namedWins = new Map(); // "type:id" -> BrowserWindow (чаты, рассылки, профиль)
+const namedWins = new Map(); // "type:id" -> BrowserWindow (чаты, рассылки)
 
 function allWindows() {
   return [rosterWin, ...namedWins.values()].filter((w) => w && !w.isDestroyed());
@@ -66,10 +65,10 @@ function attachWindowStateEvents(win) {
   win.on('unmaximize', send);
 }
 
-// Ключ в settings.json для запоминания размера окна — свой на каждый тип окна (чат, рассылки,
-// админка, профиль), не только на чат, как было раньше.
+// Ключ в settings.json для запоминания размера окна — свой на каждый тип окна (чат, рассылки),
+// не только на чат, как было раньше.
 function sizeKeyForFile(file) {
-  const map = { 'chat.html': 'chatSize', 'broadcast.html': 'broadcastSize', 'profile.html': 'profileSize' };
+  const map = { 'chat.html': 'chatSize', 'broadcast.html': 'broadcastSize' };
   return map[file] || null;
 }
 
@@ -250,10 +249,6 @@ ipcMain.on('open-chat', (event, payload) => {
 
 ipcMain.on('open-broadcast', (event, payload) => {
   createWindow('broadcast', 'broadcast.html', payload, { width: 420, height: 520, minWidth: 360, minHeight: 400 });
-});
-
-ipcMain.on('open-profile', (event, payload) => {
-  createWindow('profile', 'profile.html', payload, { width: 360, height: 640, minWidth: 320, minHeight: 460 });
 });
 
 ipcMain.on('show-user-menu', (event, payload) => {
