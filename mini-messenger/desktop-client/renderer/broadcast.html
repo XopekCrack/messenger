@@ -434,6 +434,10 @@ async function loadFeed() {
     || '<div class="empty">Сегодня рассылок пока не было</div>';
   hasUnreadDivider = firstUnreadIndex !== -1;
   items.forEach((b) => { if (b.id > maxKnownBroadcastId) maxKnownBroadcastId = b.id; });
+  // Без этого флага сработавшее от этой строки событие 'scroll' принималось бы за настоящую
+  // прокрутку пользователя и сразу запускало 3-секундный таймер скрытия полоски — именно поэтому
+  // разделитель пропадал сам через 3 секунды после открытия окна, без единого клика.
+  programmaticScroll = true;
   feed.scrollTop = feed.scrollHeight; // сразу показываем самую свежую рассылку, а не листаем сверху
 }
 
