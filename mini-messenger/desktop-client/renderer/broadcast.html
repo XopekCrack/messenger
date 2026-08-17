@@ -646,6 +646,7 @@ function renderHistoryItems(items) {
   const box = document.getElementById('hpMessages');
   if (!items.length) { box.innerHTML = '<div id="hpEmpty">Ничего не найдено</div>'; return; }
   box.innerHTML = items.map(itemHtml).join('');
+  box.scrollTop = box.scrollHeight; // сразу к самым свежим рассылкам за день, а не к началу
 }
 
 // ---------- Живое обновление: новая рассылка появляется в ленте сразу, без переоткрытия окна ----------

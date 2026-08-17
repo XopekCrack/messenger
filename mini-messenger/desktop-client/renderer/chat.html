@@ -660,6 +660,7 @@ function renderHistoryMessages(items, withDate) {
   const box = document.getElementById('hpMessages');
   if (!items.length) { box.innerHTML = '<div id="hpEmpty">Ничего не найдено</div>'; return; }
   box.innerHTML = items.map(m => bubbleHtml(m, { withDate })).join('');
+  box.scrollTop = box.scrollHeight; // сразу к самым свежим сообщениям за день, а не к началу
 }
 
 // Клик по прикреплённому файлу — скачивание через главный процесс (webContents.downloadURL),
