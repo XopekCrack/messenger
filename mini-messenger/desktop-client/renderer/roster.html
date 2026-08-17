@@ -28,7 +28,12 @@
   .wintitlebar .title .brand-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px var(--accent); }
 
   /* ---- Ростер ---- */
-  #app { display: none; flex: 1; flex-direction: column; min-height: 0; }
+  /* position:relative — чтобы #profilePanel ниже мог накладываться поверх списка абсолютным
+     позиционированием (как #historyPanel в окне чата/рассылок), а не толкать его через
+     max-height/flex-grow: та схема давала лёгкий рывок ближе к концу анимации, когда список под
+     панелью наконец получал display:none и высвобождал место, которое двум flex-элементам до этого
+     приходилось делить. */
+  #app { display: none; flex: 1; flex-direction: column; min-height: 0; position: relative; }
   #app.active { display: flex; }
 
   /* me-bar/searchBar занимают ОДНУ и ту же ячейку грида (наложены друг на друга) — это даёт честный
@@ -44,7 +49,10 @@
   #me-bar.open .chev { transform: rotate(0deg); }
   .avatar { width: 26px; height: 26px; border-radius: 50%; background: linear-gradient(135deg, var(--accent), #8f6ee8); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 10.5px; font-weight: 700; flex-shrink: 0; position: relative; }
   .avatar .dot { position: absolute; right: -2px; bottom: -2px; border: 2px solid var(--panel); -webkit-app-region: no-drag; }
-  #me-bar .name { font-weight: 600; font-size: 12.5px; }
+  /* flex:1 + nowrap/ellipsis — гарантирует, что #topSlot всегда ровно 46px высотой (для top:46px у
+     #profilePanel ниже), даже если отображаемое имя очень длинное: без этого строка могла бы
+     перенестись на вторую строку и увеличить высоту шапки. */
+  #me-bar .name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600; font-size: 12.5px; }
   #me-bar .dot { margin-right: -2px; }
 
   #searchBar { opacity: 0; pointer-events: none; }
@@ -53,7 +61,7 @@
   #searchBar input { flex: 1; background: transparent; border: none; color: var(--text); font-size: 13px; }
   #searchBar input:focus { outline: none; }
 
-  /* "История рассылок" — постоянный элемент (не пересоздаётся при каждом renderList(), в отличие от
+  /* "Объявления" — постоянный элемент (не пересоздаётся при каждом renderList(), в отличие от
      остального списка), чтобы его можно было плавно прятать/показывать при поиске и открытии
      профиля через transition, а не мгновенным display:none. */
   #historyRow { transition: opacity .15s ease, transform .2s ease; }
@@ -87,13 +95,21 @@
   .empty-hint { padding: 20px 12px; text-align: center; color: var(--muted); font-size: 12px; }
 
   /* ---- Профиль и настройки — раскрывающаяся панель под me-bar, а не отдельное окно ----
-     Как композер рассылки: становится flex:1 и забирает всё доступное место, а список контактов
-     плавно прячется (см. hideListSmoothly/showListSmoothly) — так внутренний скролл панели всегда
-     точно соответствует реальной высоте окна, а не обрезает контент молча на маленьких окнах, и
-     список не "просвечивает" снизу на больших. max-height — с большим запасом, не подгонка под
-     контент (тот же приём, что у композера рассылки). */
-  #profilePanel { display: flex; flex-direction: column; flex: 0 0 auto; max-height: 0; opacity: 0; overflow: hidden; border-bottom: 2px solid transparent; transition: max-height .25s ease, opacity .2s ease, border-color .2s ease; }
-  #profilePanel.open { flex: 1 1 auto; max-height: 4000px; opacity: 1; border-bottom-color: var(--accent); }
+     Абсолютно спозиционированный оверлей поверх списка контактов (тот же приём, что у #historyPanel
+     в окне чата/рассылок) — только opacity/transform, ничего, что требует пересчёта раскладки.
+     Раньше панель росла через max-height+flex-grow, деля место со списком, который прятался через
+     display:none с задержкой — эти два независимых процесса недосчитывались друг о друга, и ближе к
+     концу анимации, когда список наконец схлопывался, панель заметно "довырастала" рывком. Оверлей
+     с самого начала имеет свою полную, неизменную высоту (top:46px = высота #topSlot, bottom:0) —
+     доращивать нечего, поэтому дёргаться нечему. */
+  #profilePanel {
+    position: absolute; top: 46px; left: 0; right: 0; bottom: 0; z-index: 20;
+    display: flex; flex-direction: column; background: var(--bg);
+    border-top: 2px solid transparent;
+    opacity: 0; transform: translateY(-8px); pointer-events: none;
+    transition: opacity .2s ease, transform .2s ease, border-color .2s ease;
+  }
+  #profilePanel.open { opacity: 1; transform: translateY(0); pointer-events: auto; border-top-color: var(--accent); }
   #profilePanel .inner { flex: 1; min-height: 0; padding: 14px; display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
   #profilePanel .field { display: flex; gap: 8px; }
   #profilePanel .field input { flex: 1; min-width: 0; padding: 9px 11px; background: var(--panel-2); border: 1px solid var(--border); color: var(--text); border-radius: 8px; font-size: 12.5px; }
@@ -216,7 +232,7 @@
     </div>
   </div>
   <div id="historyRow" class="row" title="Открыть ленту всех рассылок">
-    <div class="badge-icon" id="historyRowIcon"></div><div class="n">История рассылок</div>
+    <div class="badge-icon" id="historyRowIcon"></div><div class="n">Объявления</div>
   </div>
   <div id="list"></div>
 </div>
@@ -299,7 +315,7 @@ function connectWs() {
       desktop.notify({
         title: '📢 Рассылка от ' + data.from_user,
         body: data.text || `📎 ${(data.files || []).length} файл(ов)`,
-        openPayload: { type: 'broadcast', id: 'broadcast', label: 'История рассылок', token, serverUrl, file: 'broadcast.html' },
+        openPayload: { type: 'broadcast', id: 'broadcast', label: 'Объявления', token, serverUrl, file: 'broadcast.html' },
       });
     }
     // Админ поменял чью-то роль/отдел/список пользователей — подхватываем сразу, без перезахода
@@ -392,7 +408,7 @@ function showListSmoothly() {
   list.classList.remove('hidden'); // ...и только теперь плавно проявляем
 }
 
-// "История рассылок" прячется тем же приёмом, но уезжая вверх — что при открытии профиля (вместе
+// "Объявления" прячутся тем же приёмом, но уезжая вверх — что при открытии профиля (вместе
 // со списком), что при активном поиске (вместе с me-bar, см. setSearchActive).
 function hideHistoryRowUp() {
   const el = document.getElementById('historyRow');
