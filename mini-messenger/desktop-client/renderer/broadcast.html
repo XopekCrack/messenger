@@ -188,6 +188,7 @@
 </div>
 
 <script src="ui-kit.js"></script>
+<script src="twemoji.min.js"></script>
 <script>
 const params = new URLSearchParams(location.search);
 const token = params.get('token');
@@ -385,12 +386,13 @@ function escapeRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 // Подсветка совпадений при поиске по истории (см. runSearch) — экранируем текст точно так же, как
 // в обычном escapeHtml, и уже В ЭКРАНИРОВАННОЙ строке оборачиваем совпадения запроса в <mark>.
 function highlightHtml(text, query) {
-  const escaped = escapeHtml(text);
+  let html = escapeHtml(text);
   const q = (query || '').trim();
-  if (!q) return escaped;
-  const pattern = escapeRegex(escapeHtml(q));
-  if (!pattern) return escaped;
-  return escaped.replace(new RegExp(pattern, 'gi'), (m) => `<mark class="hl">${m}</mark>`);
+  if (q) {
+    const pattern = escapeRegex(escapeHtml(q));
+    if (pattern) html = html.replace(new RegExp(pattern, 'gi'), (m) => `<mark class="hl">${m}</mark>`);
+  }
+  return emojiHtml(html); // emoji-символы в тексте — картинками (см. ui-kit.js), не системным шрифтом
 }
 
 function fmtSize(bytes) {

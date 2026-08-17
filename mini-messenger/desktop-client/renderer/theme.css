@@ -28,6 +28,11 @@ body {
   border: 1px solid var(--border);
 }
 
+/* Эмодзи в тексте — картинкой (twemoji), а не системным шрифтом, см. ui-kit.js/emojiHtml. Размер
+   в em — масштабируется вместе с окружающим текстом; небольшой отрицательный vertical-align —
+   чтобы картинка визуально сидела на строке так же, как обычный символ, а не проваливалась вниз. */
+.twemoji { width: 1.2em; height: 1.2em; vertical-align: -0.2em; }
+
 /* Тонкий скроллбар, единый для всех окон (списки, чаты, панели) */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }

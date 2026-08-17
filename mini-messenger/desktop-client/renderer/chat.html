@@ -102,8 +102,11 @@
     z-index: 30;
   }
   #emojiPanel.open { opacity: 1; transform: translateY(0) scale(1); pointer-events: auto; }
-  #emojiPanel button { width: 32px; height: 32px; border: none; background: transparent; border-radius: 8px; cursor: pointer; font-size: 19px; display: flex; align-items: center; justify-content: center; line-height: 1; }
+  #emojiPanel button { width: 32px; height: 32px; border: none; background: transparent; border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; line-height: 1; }
   #emojiPanel button:hover { background: var(--hover); }
+  /* Картинка внутри кнопки (см. emojiHtml) — переопределяем базовый .twemoji (1.2em, для инлайна в
+     тексте сообщений) на фиксированный размер, подходящий под 32px-кнопку сетки выбора. */
+  #emojiPanel button img.twemoji { width: 20px; height: 20px; vertical-align: unset; }
 
   /* ---- Панель истории ---- */
   /* Сообщения и строка ввода прячутся плавно (fade + сдвиг вниз), а не мгновенным display:none —
@@ -219,6 +222,7 @@
 </div>
 
 <script src="ui-kit.js"></script>
+<script src="twemoji.min.js"></script>
 <script>
 const params = new URLSearchParams(location.search);
 const type = params.get('type');       // 'room' | 'dm'
@@ -289,12 +293,13 @@ function escapeRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 // Запрос экранируем тем же escapeHtml (чтобы сравнивать "как есть" с уже экранированным текстом),
 // а затем ещё и как regex-спецсимволы, раз он идёт в new RegExp().
 function highlightHtml(text, query) {
-  const escaped = escapeHtml(text);
+  let html = escapeHtml(text);
   const q = (query || '').trim();
-  if (!q) return escaped;
-  const pattern = escapeRegex(escapeHtml(q));
-  if (!pattern) return escaped;
-  return escaped.replace(new RegExp(pattern, 'gi'), (m) => `<mark class="hl">${m}</mark>`);
+  if (q) {
+    const pattern = escapeRegex(escapeHtml(q));
+    if (pattern) html = html.replace(new RegExp(pattern, 'gi'), (m) => `<mark class="hl">${m}</mark>`);
+  }
+  return emojiHtml(html); // emoji-символы в тексте — картинками (см. ui-kit.js), не системным шрифтом
 }
 
 function fmtSize(bytes) {
@@ -502,7 +507,9 @@ const EMOJI_LIST = [
 const emojiPanel = document.getElementById('emojiPanel');
 const emojiBtn = document.getElementById('emojiBtn');
 emojiBtn.innerHTML = uiIcon('emoji');
-emojiPanel.innerHTML = EMOJI_LIST.map((e) => `<button type="button">${e}</button>`).join('');
+// data-emoji хранит исходный символ для вставки в textarea (см. клик ниже) — сама кнопка теперь
+// содержит картинку (emojiHtml), а не текстовый символ, чтобы выглядеть так же, как в сообщениях.
+emojiPanel.innerHTML = EMOJI_LIST.map((e) => `<button type="button" data-emoji="${escapeAttr(e)}">${emojiHtml(e)}</button>`).join('');
 
 function closeEmojiPanel() {
   emojiPanel.classList.remove('open');
@@ -517,10 +524,11 @@ emojiBtn.addEventListener('click', toggleEmojiPanel);
 emojiPanel.addEventListener('click', (e) => {
   const btn = e.target.closest('button');
   if (!btn) return;
+  const emoji = btn.dataset.emoji;
   const start = textEl.selectionStart ?? textEl.value.length;
   const end = textEl.selectionEnd ?? textEl.value.length;
-  textEl.value = textEl.value.slice(0, start) + btn.textContent + textEl.value.slice(end);
-  const caret = start + btn.textContent.length;
+  textEl.value = textEl.value.slice(0, start) + emoji + textEl.value.slice(end);
+  const caret = start + emoji.length;
   textEl.focus();
   textEl.setSelectionRange(caret, caret);
   textEl.dispatchEvent(new Event('input')); // пересчитать высоту textarea, если добавили несколько подряд
