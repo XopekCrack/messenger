@@ -21,6 +21,12 @@
   .msg.own .who { display: none; }
   .msg .txt { white-space: pre-wrap; word-break: break-word; line-height: 1.4; }
   .msg .time { float: right; margin: 3px 0 -3px 12px; font-size: 10px; color: var(--muted); }
+  /* Галочка прочтения — только у своих сообщений в личной переписке (см. readTickHtml): серая, пока
+     собеседник не увидел сообщение, синяя — после того, как он его прочитал (тот же сигнал, что
+     скрывает разделитель "Новые сообщения" у него — клик или прокрутка, см. clearUnreadDivider). */
+  .read-tick { display: inline-flex; vertical-align: -2px; margin-left: 4px; color: var(--muted); }
+  .read-tick svg { display: block; width: 12px; height: 12px; }
+  .read-tick.read { color: var(--accent-2); }
   .msg .files-block { display: flex; flex-direction: column; gap: 6px; }
   .msg .file { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--hover); border-radius: 8px; text-decoration: none; color: var(--text); min-width: 0; }
   .msg .file .fi { color: var(--accent-2); flex-shrink: 0; display: flex; width: 17px; height: 17px; position: relative; }
@@ -65,10 +71,26 @@
   #textWrap:focus-within { border-color: var(--accent); }
   #text { display: block; width: 100%; padding: 9px 12px; border: none; background: transparent; color: var(--text); font-size: 13px; font-family: inherit; resize: none; max-height: 120px; overflow-y: auto; line-height: 1.35; box-sizing: border-box; }
   #text:focus { outline: none; }
-  #composer .round { width: 34px; height: 34px; border-radius: 50%; border: none; cursor: pointer; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
-  #attach { background: var(--bg); border: 1px solid var(--border); color: var(--muted); }
-  #attach:hover { color: var(--text); }
+  #composer .round { width: 40px; height: 40px; border-radius: 50%; border: none; cursor: pointer; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+  #composer .round svg { width: 20px; height: 20px; }
+  #attach, #emojiBtn { background: var(--bg); border: 1px solid var(--border); color: var(--muted); }
+  #attach:hover, #emojiBtn:hover { color: var(--text); }
+  #emojiBtn.active { color: var(--accent); }
   #send { background: var(--accent); color: #fff; }
+  #send svg { width: 19px; height: 19px; }
+
+  #emojiWrap { position: relative; flex-shrink: 0; }
+  #emojiPanel {
+    position: absolute; bottom: 48px; left: 0; width: 232px; max-height: 220px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow);
+    padding: 8px; display: grid; grid-template-columns: repeat(6, 1fr); gap: 2px; overflow-y: auto;
+    opacity: 0; transform: translateY(6px) scale(.98); pointer-events: none;
+    transition: opacity .12s ease, transform .12s ease;
+    z-index: 30;
+  }
+  #emojiPanel.open { opacity: 1; transform: translateY(0) scale(1); pointer-events: auto; }
+  #emojiPanel button { width: 32px; height: 32px; border: none; background: transparent; border-radius: 8px; cursor: pointer; font-size: 19px; display: flex; align-items: center; justify-content: center; line-height: 1; }
+  #emojiPanel button:hover { background: var(--hover); }
 
   /* ---- Панель истории ---- */
   /* Сообщения и строка ввода прячутся плавно (fade + сдвиг вниз), а не мгновенным display:none —
@@ -161,6 +183,10 @@
 <div id="messages"></div>
 <div id="composer">
   <button class="round" id="attach" title="Прикрепить файл"></button>
+  <div id="emojiWrap">
+    <button class="round" id="emojiBtn" title="Эмодзи"></button>
+    <div id="emojiPanel"></div>
+  </div>
   <input type="file" id="fileInput" multiple style="display:none">
   <div id="textWrap"><textarea id="text" placeholder="Написать сообщение..." rows="1"></textarea></div>
   <button class="round" id="send" onclick="send()" title="Отправить"></button>
@@ -224,6 +250,8 @@ function updateComposerReachability(hosts) {
   document.getElementById('text').disabled = !chatReachable;
   document.getElementById('send').disabled = !chatReachable;
   document.getElementById('attach').disabled = !chatReachable;
+  document.getElementById('emojiBtn').disabled = !chatReachable;
+  if (!chatReachable) closeEmojiPanel();
   document.getElementById('text').placeholder = chatReachable
     ? 'Написать сообщение...'
     : 'Собеседник недоступен — подключён только через веб-панель администратора';
@@ -250,15 +278,24 @@ function fmtSize(bytes) {
   return (bytes / (1024 * 1024)).toFixed(1) + ' МБ';
 }
 
+// Галочка прочтения рисуется только у СВОИХ сообщений в личной переписке (в общей комнате читателей
+// много, "прочитано/не прочитано" одним битом не выразить) — синяя, если read_at уже проставлен
+// сервером (см. markDmRead в server.js), иначе серая.
+function readTickHtml(m) {
+  if (type !== 'dm' || m.from_id !== me.id) return '';
+  return `<span class="read-tick${m.read_at ? ' read' : ''}" title="${m.read_at ? 'Прочитано' : 'Отправлено'}">${uiIcon('check')}</span>`;
+}
+
 function bubbleHtml(m, { withDate } = {}) {
   const own = m.from_id === me.id;
   const d = new Date(m.created_at);
   const time = d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
   const stamp = withDate ? d.toLocaleDateString('ru-RU') + ' ' + time : time;
   const files = m.files || [];
+  const tick = readTickHtml(m);
 
   let body = '';
-  if (m.text) body += `<div class="txt selectable" data-raw-text="${escapeAttr(m.text)}">${escapeHtml(m.text)}${files.length ? '' : `<span class="time">${stamp}</span>`}</div>`;
+  if (m.text) body += `<div class="txt selectable" data-raw-text="${escapeAttr(m.text)}">${escapeHtml(m.text)}${files.length ? '' : `<span class="time">${stamp}${tick}</span>`}</div>`;
   if (files.length) {
     // Все карточки файлов — одинаковой ширины (друг под другом, а не в одну строку с временем
     // у последней — раньше время отнимало место только у последней карточки, и та казалась
@@ -272,9 +309,18 @@ function bubbleHtml(m, { withDate } = {}) {
       const href = `${serverUrl}${f.url}?token=${token}&name=${encodeURIComponent(f.name || 'файл')}`;
       return `<a class="file" href="${href}" data-name="${escapeAttr(f.name || 'файл')}"><span class="fi"><span class="fi-file">${uiIcon('file')}</span><span class="fi-download">${uiIcon('download')}</span><span class="fi-progress"><svg viewBox="0 0 24 24"><circle class="ring-bg" cx="12" cy="12" r="10"></circle><circle class="ring-bar" cx="12" cy="12" r="10"></circle></svg><span class="fi-pct"></span></span><span class="fi-check">${uiIcon('check')}</span></span><span class="fmeta"><span class="fn">${escapeHtml(f.name || 'файл')}</span><span class="fs">${fmtSize(f.size)}</span></span></a>`;
     }).join('');
-    body += `<div class="files-block">${cards}</div><div class="files-time">${stamp}</div>`;
+    body += `<div class="files-block">${cards}</div><div class="files-time">${stamp}${tick}</div>`;
   }
-  return `<div class="msg${own ? ' own' : ''}"><div class="who">${m.from_user}</div>${body}</div>`;
+  return `<div class="msg${own ? ' own' : ''}" data-ts="${m.created_at}"><div class="who">${m.from_user}</div>${body}</div>`;
+}
+
+// Живое обновление галочек на уже отрисованных своих сообщениях, когда приходит read-receipt —
+// без этого пришлось бы перезагружать историю, чтобы увидеть, что собеседник прочитал ответ.
+function applyReadReceipt(upTo) {
+  document.querySelectorAll('#messages .msg.own[data-ts]').forEach((el) => {
+    if (Number(el.dataset.ts) > upTo) return;
+    el.querySelector('.read-tick')?.classList.add('read');
+  });
 }
 
 // ---------- "Новые сообщения" — та же логика, что в окне рассылок (см. addLiveBroadcast/loadFeed
@@ -315,6 +361,10 @@ function clearUnreadDivider() {
   document.getElementById('unreadDivider')?.remove();
   hasUnreadDivider = false;
   setLastSeenTs(maxKnownTs); // "прочитано" — запоминаем, переживёт закрытие окна
+  // Тем же сигналом (клик/скролл, спустя те же 3 секунды) сообщаем серверу, что сообщения собеседника
+  // до maxKnownTs прочитаны — см. markDmRead в server.js. Только для личных чатов: в общей комнате
+  // "прочитано кем-то одним" не имеет смысла, галочек там нет (см. readTickHtml).
+  if (type === 'dm') sendPayload({ type: 'read', peer: id, upTo: maxKnownTs });
 }
 function scheduleUnreadClear() {
   if (!hasUnreadDivider) return;
@@ -366,6 +416,9 @@ function connectWs() {
       document.getElementById('statusDot').title = statusTitle(state, p?.idleSince, p?.since);
       updateComposerReachability(p?.hosts);
     }
+    // Собеседник (в этом окне — data.peer) прочитал мои сообщения по data.upTo включительно —
+    // перекрашиваем галочки уже отрисованных своих сообщений из серых в синие, без перезагрузки.
+    if (data.type === 'read-receipt' && type === 'dm' && data.peer === id) applyReadReceipt(data.upTo);
     if (data.type !== 'message') return;
     const belongs = type === 'room' ? data.room === id : (data.from_id === id || data.to_id === id);
     if (belongs) addMessage(data);
@@ -409,6 +462,45 @@ textEl.addEventListener('keydown', (e) => {
 textEl.addEventListener('input', () => {
   textEl.style.height = 'auto';
   textEl.style.height = Math.min(textEl.scrollHeight, 120) + 'px';
+});
+
+// Базовый набор эмодзи (как в разделе "часто используемые" на iPhone) — не полный юникодный
+// список, а компактная сетка самых ходовых смайликов/жестов для рабочей переписки.
+const EMOJI_LIST = [
+  '😀', '😂', '🤣', '😊', '😉', '😍', '😘', '🥰', '😎', '🤩',
+  '🙂', '🙃', '😇', '🤔', '😐', '😴', '😪', '😭', '😢', '😡',
+  '🤯', '😱', '🥳', '😅', '😬', '🤫', '🤐', '🙄', '😏', '😜',
+  '👍', '👎', '👏', '🙏', '👌', '✌️', '🤝', '💪', '🤞', '👋',
+  '❤️', '🔥', '🎉', '✅', '❌', '⭐', '💯', '⏰', '☕', '📎',
+];
+const emojiPanel = document.getElementById('emojiPanel');
+const emojiBtn = document.getElementById('emojiBtn');
+emojiBtn.innerHTML = uiIcon('emoji');
+emojiPanel.innerHTML = EMOJI_LIST.map((e) => `<button type="button">${e}</button>`).join('');
+
+function closeEmojiPanel() {
+  emojiPanel.classList.remove('open');
+  emojiBtn.classList.remove('active');
+}
+function toggleEmojiPanel() {
+  const opening = !emojiPanel.classList.contains('open');
+  emojiPanel.classList.toggle('open', opening);
+  emojiBtn.classList.toggle('active', opening);
+}
+emojiBtn.addEventListener('click', toggleEmojiPanel);
+emojiPanel.addEventListener('click', (e) => {
+  const btn = e.target.closest('button');
+  if (!btn) return;
+  const start = textEl.selectionStart ?? textEl.value.length;
+  const end = textEl.selectionEnd ?? textEl.value.length;
+  textEl.value = textEl.value.slice(0, start) + btn.textContent + textEl.value.slice(end);
+  const caret = start + btn.textContent.length;
+  textEl.focus();
+  textEl.setSelectionRange(caret, caret);
+  textEl.dispatchEvent(new Event('input')); // пересчитать высоту textarea, если добавили несколько подряд
+});
+document.addEventListener('click', (e) => {
+  if (emojiPanel.classList.contains('open') && !e.target.closest('#emojiWrap')) closeEmojiPanel();
 });
 
 async function uploadFile(file) {

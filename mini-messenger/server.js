@@ -73,6 +73,9 @@ db.exec(`
   if (!cols.includes('file_name')) db.exec('ALTER TABLE messages ADD COLUMN file_name TEXT');
   if (!cols.includes('file_size')) db.exec('ALTER TABLE messages ADD COLUMN file_size INTEGER');
   if (!cols.includes('files_json')) db.exec('ALTER TABLE messages ADD COLUMN files_json TEXT');
+  // Отметка о прочтении — только для личных сообщений (to_id заполнен); для сообщений в общей
+  // комнате остаётся NULL и не используется (галочки прочтения там неоднозначны — читателей много).
+  if (!cols.includes('read_at')) db.exec('ALTER TABLE messages ADD COLUMN read_at INTEGER');
 }
 {
   const cols = db.prepare("PRAGMA table_info(broadcasts)").all().map((c) => c.name);
@@ -210,22 +213,28 @@ const roomHistoryDays = db.prepare(`
 `);
 
 const dmHistoryAll = db.prepare(`
-  SELECT m.id, m.text, m.created_at, m.from_id, m.to_id, m.file_url, m.file_name, m.file_size, m.files_json, u.display_name AS from_user
+  SELECT m.id, m.text, m.created_at, m.from_id, m.to_id, m.read_at, m.file_url, m.file_name, m.file_size, m.files_json, u.display_name AS from_user
   FROM messages m JOIN users u ON u.id = m.from_id
   WHERE (m.from_id = ? AND m.to_id = ?) OR (m.from_id = ? AND m.to_id = ?)
   ORDER BY m.id DESC LIMIT 200
 `);
 const dmHistoryRange = db.prepare(`
-  SELECT m.id, m.text, m.created_at, m.from_id, m.to_id, m.file_url, m.file_name, m.file_size, m.files_json, u.display_name AS from_user
+  SELECT m.id, m.text, m.created_at, m.from_id, m.to_id, m.read_at, m.file_url, m.file_name, m.file_size, m.files_json, u.display_name AS from_user
   FROM messages m JOIN users u ON u.id = m.from_id
   WHERE ((m.from_id = ? AND m.to_id = ?) OR (m.from_id = ? AND m.to_id = ?)) AND m.created_at >= ? AND m.created_at < ?
   ORDER BY m.id ASC
 `);
 const dmHistorySearch = db.prepare(`
-  SELECT m.id, m.text, m.created_at, m.from_id, m.to_id, m.file_url, m.file_name, m.file_size, m.files_json, u.display_name AS from_user
+  SELECT m.id, m.text, m.created_at, m.from_id, m.to_id, m.read_at, m.file_url, m.file_name, m.file_size, m.files_json, u.display_name AS from_user
   FROM messages m JOIN users u ON u.id = m.from_id
   WHERE ((m.from_id = ? AND m.to_id = ?) OR (m.from_id = ? AND m.to_id = ?)) AND lower_ru(m.text) LIKE '%' || lower_ru(?) || '%'
   ORDER BY m.id DESC LIMIT 200
+`);
+// Отмечаем прочитанными сообщения ОТ peer КО мне (to_id = я), полученные не позже upTo — тем же
+// сигналом, что и разделитель "Новые сообщения" в чате (клик/скролл), а не просто открытием окна.
+const markDmRead = db.prepare(`
+  UPDATE messages SET read_at = ?
+  WHERE from_id = ? AND to_id = ? AND read_at IS NULL AND created_at <= ?
 `);
 const dmHistoryDays = db.prepare(`
   SELECT strftime('%Y-%m-%d', datetime(m.created_at/1000, 'unixepoch', ?)) AS day, COUNT(*) AS count
@@ -696,6 +705,20 @@ wss.on('connection', (ws, req) => {
         meta.lastSeen = Date.now();
       }
       broadcastPresence();
+      return;
+    }
+
+    if (msg.type === 'read') {
+      const peer = Number(msg.peer);
+      const upTo = Number(msg.upTo);
+      if (!peer || !upTo) return;
+      const info = markDmRead.run(Date.now(), peer, user.id, upTo);
+      if (info.changes > 0) {
+        // Сообщаем автору (peer), что я прочитал его сообщения по upTo включительно — если он сейчас
+        // онлайн, его открытое окно переписки со мной сразу перекрасит галочки в синий.
+        const out = JSON.stringify({ type: 'read-receipt', peer: user.id, upTo });
+        (online.get(peer) || new Set()).forEach((c) => c.send(out));
+      }
       return;
     }
 

@@ -131,15 +131,7 @@
   }
   #profilePanel.open { opacity: 1; transform: translateY(0); pointer-events: auto; border-top-color: var(--accent); }
   #profilePanel .inner { flex: 1; min-height: 0; padding: 14px; display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
-  #profilePanel .field { display: flex; gap: 8px; }
-  #profilePanel .field input { flex: 1; min-width: 0; padding: 9px 11px; background: var(--panel-2); border: 1px solid var(--border); color: var(--text); border-radius: 8px; font-size: 12.5px; }
-  #profilePanel .field input:focus { outline: none; border-color: var(--accent); }
-  #profilePanel .field button { padding: 0 14px; border: none; border-radius: 8px; background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #fff; font-weight: 700; cursor: pointer; font-size: 12px; }
-  #profilePanel .pp-status { font-size: 11px; min-height: 2px; color: var(--online); }
   #profilePanel .section-title { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; font-weight: 700; }
-  /* Между полем имени и "Тема оформления" уже есть небольшой зазор — его создаёт .pp-status
-     (обычно пустая, но занимает место). После .theme-row такого спейсера нет, поэтому отступ перед
-     "Настройки приложения" без этого правила был заметно меньше — добавляем ровно недостающее. */
   #profilePanel .theme-row + .section-title { margin-top: 10px; }
   #profilePanel .theme-row { display: flex; gap: 8px; padding: 10px; border-radius: 9px; background: var(--panel); border: 1px solid var(--border); }
   #profilePanel .theme-row .info { flex: 1; }
@@ -193,12 +185,6 @@
   </div>
   <div id="profilePanel">
     <div class="inner">
-      <div class="field">
-        <input id="ppDisplayName" placeholder="Отображаемое имя">
-        <button id="ppSaveName">Сохранить</button>
-      </div>
-      <div class="pp-status" id="ppStatus"></div>
-
       <div class="section-title">Тема оформления</div>
       <div class="theme-row">
         <div class="info">
@@ -405,9 +391,6 @@ function paintProfileDownloadPath(p) {
 }
 
 async function loadProfilePanel() {
-  document.getElementById('ppDisplayName').value = displayNameOf(me);
-  document.getElementById('ppStatus').textContent = '';
-
   const settings = await desktop.getSettings();
   PP_CHECKBOX_IDS.forEach(([id, key]) => { document.getElementById(id).checked = !!settings[key]; });
   paintProfileTheme(settings.theme);
@@ -462,23 +445,6 @@ function closeProfilePanel() {
   showListSmoothly();
   showHistoryRow();
 }
-
-document.getElementById('ppSaveName').onclick = async () => {
-  const status = document.getElementById('ppStatus');
-  const display_name = document.getElementById('ppDisplayName').value.trim();
-  if (!display_name) { status.style.color = 'var(--danger)'; status.textContent = 'Введите имя'; return; }
-  try {
-    await api('/api/me', { method: 'PATCH', body: JSON.stringify({ display_name }) });
-    me.display_name = display_name;
-    localStorage.setItem('me', JSON.stringify(me));
-    document.getElementById('meName').textContent = displayNameOf(me);
-    status.style.color = 'var(--online)';
-    status.textContent = 'Сохранено';
-  } catch (e) {
-    status.style.color = 'var(--danger)';
-    status.textContent = e.message || 'Ошибка';
-  }
-};
 
 PP_CHECKBOX_IDS.forEach(([id, key]) => {
   document.getElementById(id).addEventListener('change', (e) => desktop.setSettings({ [key]: e.target.checked }));
