@@ -72,9 +72,7 @@
   .item { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; min-width: 0; }
   .item .who { color: var(--accent-2); font-weight: 700; font-size: 12px; }
   .item .time { color: var(--muted); font-size: 10.5px; margin-left: 6px; }
-  /* line-height чуть больше обычного (1.4 -> 1.6) — .twemoji теперь 1.8em, крупнее межстрочного
-     интервала; без этого запаса соседние строки могли бы наезжать друг на друга вокруг emoji. */
-  .item .txt { margin-top: 4px; white-space: pre-wrap; word-break: break-word; line-height: 1.6; }
+  .item .txt { margin-top: 4px; white-space: pre-wrap; word-break: break-word; line-height: 1.4; }
   /* Подсветка совпадений при поиске по истории — см. highlightHtml/runSearch. */
   mark.hl { background: var(--accent); color: #fff; border-radius: 3px; padding: 0 1px; }
   .item .file-row { margin-top: 6px; }
