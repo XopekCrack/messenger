@@ -14,18 +14,24 @@
   .wintitlebar .who .n { font-weight: 600; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .wintitlebar .who .s { font-weight: 400; color: var(--muted); font-size: 11px; margin-left: 4px; }
 
-  #messages { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 8px; }
+  /* justify-content: flex-end — чтобы при малом числе сообщений они были прижаты к низу (у поля
+     ввода), как в любом мессенджере, а не висели у верхнего края с пустотой под собой. На порядок
+     сообщений в DOM и на автопрокрутку вниз (см. addMessage) это не влияет — просто где оказывается
+     "лишнее" пустое место, когда сообщений мало. */
+  #messages { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; justify-content: flex-end; gap: 8px; }
   .msg { max-width: 78%; min-width: 0; padding: 7px 11px 6px; border-radius: 12px; background: var(--bubble); align-self: flex-start; }
   .msg.own { background: var(--own); align-self: flex-end; }
   .msg .who { font-size: 10.5px; color: var(--accent); font-weight: 600; margin-bottom: 2px; }
   .msg.own .who { display: none; }
   .msg .txt { white-space: pre-wrap; word-break: break-word; line-height: 1.4; }
-  .msg .time { float: right; margin: 3px 0 -3px 12px; font-size: 7px; color: var(--muted); }
+  /* Подсветка совпадений при поиске по истории — см. highlightHtml/runSearch. */
+  mark.hl { background: var(--accent); color: #fff; border-radius: 3px; padding: 0 1px; }
+  .msg .time { float: right; margin: 3px 0 -3px 12px; font-size: 9px; color: var(--muted); }
   /* Галочка прочтения — только у своих сообщений в личной переписке (см. readTickHtml): серая, пока
      собеседник не увидел сообщение, синяя — после того, как он его прочитал (тот же сигнал, что
      скрывает разделитель "Новые сообщения" у него — клик или прокрутка, см. clearUnreadDivider). */
   .read-tick { display: inline-flex; vertical-align: -1px; margin-left: 3px; color: var(--muted); }
-  .read-tick svg { display: block; width: 8px; height: 8px; }
+  .read-tick svg { display: block; width: 10px; height: 10px; }
   .read-tick.read { color: var(--accent-2); }
   .msg .files-block { display: flex; flex-direction: column; gap: 6px; }
   .msg .file { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--hover); border-radius: 8px; text-decoration: none; color: var(--text); min-width: 0; }
@@ -52,7 +58,7 @@
   .msg .file.file-deleted { cursor: default; }
   .msg .file.file-deleted .fi { color: var(--muted); }
   .msg .file.file-deleted .fn { color: var(--muted); }
-  .msg .files-time { text-align: right; font-size: 7px; color: var(--muted); margin-top: 1px; }
+  .msg .files-time { text-align: right; font-size: 9px; color: var(--muted); margin-top: 1px; }
   .day-sep { align-self: center; color: var(--muted); font-size: 10.5px; background: var(--panel-2); padding: 3px 10px; border-radius: 20px; margin: 4px 0; }
   /* Разделитель "Новые сообщения" — как в окне рассылок (см. addLiveBroadcast/loadFeed там же по
      смыслу), только для входящих сообщений в чате. -webkit-app-region не задаём: разделитель лежит
@@ -88,7 +94,7 @@
   #emojiBtn.active { color: var(--accent); }
 
   #emojiPanel {
-    position: absolute; bottom: 52px; right: 10px; width: 232px; max-height: 220px;
+    position: absolute; bottom: 52px; right: 10px; width: 244px; max-height: 220px;
     background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow);
     padding: 8px; display: grid; grid-template-columns: repeat(6, 1fr); gap: 2px; overflow-y: auto;
     opacity: 0; transform: translateY(6px) scale(.98); pointer-events: none;
@@ -96,7 +102,7 @@
     z-index: 30;
   }
   #emojiPanel.open { opacity: 1; transform: translateY(0) scale(1); pointer-events: auto; }
-  #emojiPanel button { width: 32px; height: 32px; border: none; background: transparent; border-radius: 8px; cursor: pointer; font-size: 19px; display: flex; align-items: center; justify-content: center; line-height: 1; }
+  #emojiPanel button { width: 36px; height: 36px; border: none; background: transparent; border-radius: 8px; cursor: pointer; font-size: 23px; display: flex; align-items: center; justify-content: center; line-height: 1; }
   #emojiPanel button:hover { background: var(--hover); }
 
   /* ---- Панель истории ---- */
@@ -277,6 +283,19 @@ async function api(path) {
 
 function escapeHtml(s) { return s.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
 function escapeAttr(s) { return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+function escapeRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+// Подсветка совпадений при поиске по истории (см. runSearch) — экранируем текст точно так же, как
+// в обычном escapeHtml, и уже В ЭКРАНИРОВАННОЙ строке оборачиваем совпадения запроса в <mark>.
+// Запрос экранируем тем же escapeHtml (чтобы сравнивать "как есть" с уже экранированным текстом),
+// а затем ещё и как regex-спецсимволы, раз он идёт в new RegExp().
+function highlightHtml(text, query) {
+  const escaped = escapeHtml(text);
+  const q = (query || '').trim();
+  if (!q) return escaped;
+  const pattern = escapeRegex(escapeHtml(q));
+  if (!pattern) return escaped;
+  return escaped.replace(new RegExp(pattern, 'gi'), (m) => `<mark class="hl">${m}</mark>`);
+}
 
 function fmtSize(bytes) {
   if (!bytes) return '';
@@ -293,7 +312,7 @@ function readTickHtml(m) {
   return `<span class="read-tick${m.read_at ? ' read' : ''}" title="${m.read_at ? 'Прочитано' : 'Отправлено'}">${uiIcon('check')}</span>`;
 }
 
-function bubbleHtml(m, { withDate } = {}) {
+function bubbleHtml(m, { withDate, query } = {}) {
   const own = m.from_id === me.id;
   const d = new Date(m.created_at);
   const time = d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
@@ -302,7 +321,7 @@ function bubbleHtml(m, { withDate } = {}) {
   const tick = readTickHtml(m);
 
   let body = '';
-  if (m.text) body += `<div class="txt selectable" data-raw-text="${escapeAttr(m.text)}">${escapeHtml(m.text)}${files.length ? '' : `<span class="time">${stamp}${tick}</span>`}</div>`;
+  if (m.text) body += `<div class="txt selectable" data-raw-text="${escapeAttr(m.text)}">${highlightHtml(m.text, query)}${files.length ? '' : `<span class="time">${stamp}${tick}</span>`}</div>`;
   if (files.length) {
     // Все карточки файлов — одинаковой ширины (друг под другом, а не в одну строку с временем
     // у последней — раньше время отнимало место только у последней карточки, и та казалась
@@ -752,13 +771,13 @@ async function runSearch(text) {
   const items = type === 'room'
     ? await api(`/api/history/room/${id}?q=${encodeURIComponent(text)}`)
     : await api(`/api/history/dm/${id}?q=${encodeURIComponent(text)}`);
-  renderHistoryMessages(items, true);
+  renderHistoryMessages(items, true, text);
 }
 
-function renderHistoryMessages(items, withDate) {
+function renderHistoryMessages(items, withDate, query) {
   const box = document.getElementById('hpMessages');
   if (!items.length) { box.innerHTML = '<div id="hpEmpty">Ничего не найдено</div>'; return; }
-  box.innerHTML = items.map(m => bubbleHtml(m, { withDate })).join('');
+  box.innerHTML = items.map(m => bubbleHtml(m, { withDate, query })).join('');
   box.scrollTop = box.scrollHeight; // сразу к самым свежим сообщениям за день, а не к началу
 }
 

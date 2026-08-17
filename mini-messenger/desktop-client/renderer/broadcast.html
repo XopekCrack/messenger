@@ -73,6 +73,8 @@
   .item .who { color: var(--accent-2); font-weight: 700; font-size: 12px; }
   .item .time { color: var(--muted); font-size: 10.5px; margin-left: 6px; }
   .item .txt { margin-top: 4px; white-space: pre-wrap; word-break: break-word; line-height: 1.4; }
+  /* Подсветка совпадений при поиске по истории — см. highlightHtml/runSearch. */
+  mark.hl { background: var(--accent); color: #fff; border-radius: 3px; padding: 0 1px; }
   .item .file-row { margin-top: 6px; }
   .item .file { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--hover); border-radius: 8px; text-decoration: none; color: var(--text); min-width: 0; }
   .item .file .fi { color: var(--accent-2); flex-shrink: 0; display: flex; width: 17px; height: 17px; position: relative; }
@@ -379,6 +381,17 @@ async function api(path, opts) {
 
 function escapeHtml(s) { return s.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
 function escapeAttr(s) { return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+function escapeRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+// Подсветка совпадений при поиске по истории (см. runSearch) — экранируем текст точно так же, как
+// в обычном escapeHtml, и уже В ЭКРАНИРОВАННОЙ строке оборачиваем совпадения запроса в <mark>.
+function highlightHtml(text, query) {
+  const escaped = escapeHtml(text);
+  const q = (query || '').trim();
+  if (!q) return escaped;
+  const pattern = escapeRegex(escapeHtml(q));
+  if (!pattern) return escaped;
+  return escaped.replace(new RegExp(pattern, 'gi'), (m) => `<mark class="hl">${m}</mark>`);
+}
 
 function fmtSize(bytes) {
   if (!bytes) return '';
@@ -387,7 +400,7 @@ function fmtSize(bytes) {
   return (bytes / (1024 * 1024)).toFixed(1) + ' МБ';
 }
 
-function itemHtml(b) {
+function itemHtml(b, query) {
   const time = new Date(b.created_at).toLocaleString('ru-RU');
   let filesHtml = '';
   (b.files || []).forEach(f => {
@@ -400,7 +413,7 @@ function itemHtml(b) {
     const href = `${serverUrl}${f.url}?token=${token}&name=${encodeURIComponent(f.name || 'файл')}`;
     filesHtml += `<div class="file-row"><a class="file" href="${href}" data-name="${escapeAttr(f.name || 'файл')}"><span class="fi"><span class="fi-file">${uiIcon('file')}</span><span class="fi-download">${uiIcon('download')}</span><span class="fi-progress"><svg viewBox="0 0 24 24"><circle class="ring-bg" cx="12" cy="12" r="10"></circle><circle class="ring-bar" cx="12" cy="12" r="10"></circle></svg><span class="fi-pct"></span></span><span class="fi-check">${uiIcon('check')}</span></span><span class="fmeta"><span class="fn">${escapeHtml(f.name || 'файл')}</span><span class="fs">${fmtSize(f.size)}</span></span></a></div>`;
   });
-  const txtHtml = b.text ? `<div class="txt selectable" data-raw-text="${escapeAttr(b.text)}">${escapeHtml(b.text)}</div>` : '';
+  const txtHtml = b.text ? `<div class="txt selectable" data-raw-text="${escapeAttr(b.text)}">${highlightHtml(b.text, query)}</div>` : '';
   return `<div class="item"><span class="who">${b.from_user}</span><span class="time">${time}</span>${txtHtml}${filesHtml}</div>`;
 }
 
@@ -639,13 +652,15 @@ function debounceSearch(e) {
 async function runSearch(text) {
   [...document.querySelectorAll('#hpDays .dbtn')].forEach(b => b.classList.remove('active'));
   const items = await api(`/api/broadcasts?q=${encodeURIComponent(text)}`);
-  renderHistoryItems(items);
+  renderHistoryItems(items, text);
 }
 
-function renderHistoryItems(items) {
+function renderHistoryItems(items, query) {
   const box = document.getElementById('hpMessages');
   if (!items.length) { box.innerHTML = '<div id="hpEmpty">Ничего не найдено</div>'; return; }
-  box.innerHTML = items.map(itemHtml).join('');
+  // items.map(itemHtml) напрямую передал бы itemHtml ещё и (index, array) от Array.prototype.map —
+  // индекс попал бы вторым аргументом туда, где теперь ожидается query. Оборачиваем явно.
+  box.innerHTML = items.map((b) => itemHtml(b, query)).join('');
   box.scrollTop = box.scrollHeight; // сразу к самым свежим рассылкам за день, а не к началу
 }
 
