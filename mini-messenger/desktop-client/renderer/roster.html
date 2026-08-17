@@ -63,9 +63,14 @@
 
   /* "Объявления" — постоянный элемент (не пересоздаётся при каждом renderList(), в отличие от
      остального списка), чтобы его можно было плавно прятать/показывать при поиске и открытии
-     профиля через transition, а не мгновенным display:none. */
-  #historyRow { transition: opacity .15s ease, transform .2s ease; }
-  #historyRow.hidden-up { opacity: 0; pointer-events: none; transform: translateY(-14px); }
+     профиля. Раньше высота схлопывалась мгновенным display:none с задержкой в 200мс (после
+     fade) — а поиск при этом всё время держит #list видимым (в отличие от открытия профиля, где
+     список тоже прячется одновременно), так что этот отложенный "прыжок" на 46px вверх было хорошо
+     видно каждый раз, когда начинался поиск. Высота у строки заранее известна и не меняется —
+     поэтому max-height можно анимировать по-настоящему (в отличие от #profilePanel, чей контент
+     заранее неизвестного размера), без скачка в конце. */
+  #historyRow { overflow: hidden; max-height: 48px; transition: opacity .15s ease, transform .2s ease, max-height .2s ease; }
+  #historyRow.hidden-up { opacity: 0; pointer-events: none; transform: translateY(-14px); max-height: 0; }
 
   /* Плавно прячется, пока открыта панель профиля (см. hideListSmoothly/showListSmoothly) — сначала
      гаснет (opacity), а когда переход закончится, по-настоящему убирается из раскладки
@@ -88,11 +93,11 @@
      ниже про canReceiveMessages в ui-kit.js): не кликабелен, приглушён, без обычной подсветки при наведении. */
   .row.unreachable { opacity: .5; cursor: default; }
   .row.unreachable:hover { background: transparent; }
-  /* Индикатор непрочитанного — точка справа в строке (не путать с точкой присутствия слева).
+  /* Индикатор непрочитанного — счётчик справа в строке (не путать с точкой присутствия слева).
      Состояние приходит от главного процесса (см. desktop.onUnreadState) — он же считает, какое
-     окно сейчас открыто/в фокусе, и сбрасывает флаг при его открытии. */
-  .row .unread-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex-shrink: 0; margin-left: 6px; display: none; }
-  .row.unread .unread-dot { display: block; }
+     окно сейчас открыто/в фокусе, и сбрасывает счётчик при его открытии. */
+  .row .unread-badge { display: none; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--accent); color: #fff; font-size: 10px; font-weight: 700; align-items: center; justify-content: center; flex-shrink: 0; margin-left: 6px; box-sizing: border-box; }
+  .row.unread .unread-badge { display: flex; }
   .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--offline); flex-shrink: 0; }
   .dot.active { background: var(--online); box-shadow: 0 0 6px 0 var(--online); }
   .dot.idle { background: var(--afk); box-shadow: 0 0 6px 0 var(--afk); }
@@ -237,7 +242,7 @@
     </div>
   </div>
   <div id="historyRow" class="row" title="Открыть ленту всех рассылок">
-    <div class="badge-icon" id="historyRowIcon"></div><div class="n">Объявления</div><span class="unread-dot"></span>
+    <div class="badge-icon" id="historyRowIcon"></div><div class="n">Объявления</div><span class="unread-badge" id="historyRowBadge"></span>
   </div>
   <div id="list"></div>
 </div>
@@ -342,10 +347,13 @@ function statusLabel(state, idleSince) {
   if (state === 'idle') return `Отошёл (${formatIdleDuration(idleSince)})`;
   return 'Не в сети';
 }
-// Тултип строки пользователя: "Статус: ..." + по строке "Имя ПК: ..." на каждый подключённый
-// компьютер (если несколько сессий на одном аккаунте).
-function buildTooltip(state, idleSince, hosts) {
+// Тултип строки пользователя: "Статус: ..." + с какого момента этот статус действует (since —
+// от сервера, формируется в formatStatusSince из ui-kit.js) + по строке "Имя ПК: ..." на каждый
+// подключённый компьютер (если несколько сессий на одном аккаунте).
+function buildTooltip(state, idleSince, hosts, since) {
   const lines = [`Статус: ${statusLabel(state, idleSince)}`];
+  const sinceLine = formatStatusSince(state, since);
+  if (sinceLine) lines.push(sinceLine);
   (hosts || []).forEach((h) => lines.push(`Имя ПК: ${h}`));
   return lines.join('\n');
 }
@@ -413,19 +421,16 @@ function showListSmoothly() {
   list.classList.remove('hidden'); // ...и только теперь плавно проявляем
 }
 
-// "Объявления" прячутся тем же приёмом, но уезжая вверх — что при открытии профиля (вместе
-// со списком), что при активном поиске (вместе с me-bar, см. setSearchActive).
+// "Объявления" прячутся, уезжая вверх, — что при открытии профиля (вместе со списком), что при
+// активном поиске (вместе с me-bar, см. setSearchActive). Высота строки схлопывается через
+// max-height в самом CSS-переходе (см. #historyRow.hidden-up) — никакого отдельного display:none
+// с задержкой не нужно, поэтому и прыжка в конце анимации, пока список поиска остаётся видимым
+// рядом, больше нет.
 function hideHistoryRowUp() {
-  const el = document.getElementById('historyRow');
-  if (el.classList.contains('hidden-up')) return;
-  el.classList.add('hidden-up');
-  setTimeout(() => { if (el.classList.contains('hidden-up')) el.style.display = 'none'; }, 200);
+  document.getElementById('historyRow').classList.add('hidden-up');
 }
 function showHistoryRow() {
-  const el = document.getElementById('historyRow');
-  el.style.display = 'flex';
-  void el.offsetHeight;
-  el.classList.remove('hidden-up');
+  document.getElementById('historyRow').classList.remove('hidden-up');
 }
 
 function toggleProfilePanel() {
@@ -506,7 +511,7 @@ function applyReachability(row, u, p) {
   const reachable = canReceiveMessages(p.hosts);
   const chatPayload = { type: 'dm', id: u.id, label: displayNameOf(u), token, serverUrl };
   row.classList.toggle('unreachable', !reachable);
-  row.title = buildTooltip(p.state, p.idleSince, p.hosts)
+  row.title = buildTooltip(p.state, p.idleSince, p.hosts, p.since)
     + (reachable ? '' : '\nСейчас недоступен для сообщений и файлов — подключён только через веб-панель администратора');
   row.onclick = reachable ? () => desktop.openChat(chatPayload) : null;
   row.oncontextmenu = reachable
@@ -514,17 +519,23 @@ function applyReachability(row, u, p) {
     : (e) => e.preventDefault();
 }
 
-// ---------- Непрочитанные — состояние хранит и решает главный процесс (main.js), здесь только отрисовка ----------
-let unreadDmIds = new Set();
-let unreadBroadcastFlag = false;
+// ---------- Непрочитанные — состояние хранит и считает главный процесс (main.js), здесь только отрисовка ----------
+let unreadDmCounts = {}; // { userId: count } — ключи приходят строками (через IPC/JSON), см. main.js
+let unreadBroadcastCount = 0;
+
+function setUnreadBadge(row, count) {
+  row.classList.toggle('unread', count > 0);
+  const badge = row.querySelector('.unread-badge');
+  if (badge) badge.textContent = count > 99 ? '99+' : String(count);
+}
 
 function applyUnreadState(state) {
-  unreadDmIds = new Set(state.dms || []);
-  unreadBroadcastFlag = !!state.broadcast;
+  unreadDmCounts = state.dms || {};
+  unreadBroadcastCount = state.broadcast || 0;
   document.querySelectorAll('#list .row[data-uid]').forEach((row) => {
-    row.classList.toggle('unread', unreadDmIds.has(Number(row.dataset.uid)));
+    setUnreadBadge(row, unreadDmCounts[row.dataset.uid] || 0);
   });
-  document.getElementById('historyRow').classList.toggle('unread', unreadBroadcastFlag);
+  setUnreadBadge(document.getElementById('historyRow'), unreadBroadcastCount);
 }
 desktop.onUnreadState(applyUnreadState);
 
@@ -533,9 +544,10 @@ function makeUserRow(u) {
   const p = presence[u.id] || { state: 'offline', hosts: [] };
   const name = displayNameOf(u);
   const row = document.createElement('div');
-  row.className = 'row' + (isMe ? ' is-me' : '') + (!isMe && unreadDmIds.has(u.id) ? ' unread' : '');
+  row.className = 'row' + (isMe ? ' is-me' : '');
   row.dataset.uid = u.id; // нужно для точечного обновления статуса без пересборки всего списка
-  row.innerHTML = `<div class="dot ${p.state}"></div><div class="n">${name}${isMe ? ' <span class="me-tag">это вы</span>' : ''}</div><span class="unread-dot"></span>`;
+  row.innerHTML = `<div class="dot ${p.state}"></div><div class="n">${name}${isMe ? ' <span class="me-tag">это вы</span>' : ''}</div><span class="unread-badge"></span>`;
+  if (!isMe) setUnreadBadge(row, unreadDmCounts[u.id] || 0);
   if (isMe) {
     row.title = 'Профиль и настройки';
     row.onclick = toggleProfilePanel;

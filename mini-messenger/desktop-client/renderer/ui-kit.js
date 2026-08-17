@@ -17,6 +17,18 @@
     return hosts.some((h) => h !== window.ADMIN_WEB_HOSTNAME);
   };
 
+  // Строка "с какого момента действует текущий статус" для тултипа — server.js присылает since
+  // в presence (момент последней смены агрегированного статуса пользователя). Используется и в
+  // ростере (buildTooltip), и в шапке окна чата (статус собеседника).
+  window.formatStatusSince = (state, since) => {
+    if (!since) return '';
+    const d = new Date(since);
+    const date = d.toLocaleDateString('ru-RU');
+    const time = d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+    const label = state === 'active' ? 'В сети с' : state === 'idle' ? 'Отошёл с' : 'Не в сети с';
+    return `${label} ${date} ${time}`;
+  };
+
   const ICONS = {
     minimize: '<svg viewBox="0 0 16 16" width="14" height="14"><rect x="3" y="7.25" width="10" height="1.5" rx="0.75" fill="currentColor"/></svg>',
     close: '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3.5 3.5l9 9m0-9l-9 9"/></svg>',

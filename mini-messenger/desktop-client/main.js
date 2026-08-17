@@ -42,19 +42,23 @@ const namedWins = new Map(); // "type:id" -> BrowserWindow (чаты, рассы
 // Источник истины один — главный процесс: у него уже есть вся нужная информация (какое окно сейчас
 // открыто/сфокусировано) в notify() ниже, откуда и вызывается markUnread. Ростер получает состояние
 // через unread-state (пуш при изменении) и get-unread-state (разовый запрос при своём старте — вдруг
-// что-то пришло, пока он ещё не был готов слушать пуши).
-const unreadDms = new Set(); // userId
-let unreadBroadcast = false;
+// что-то пришло, пока он ещё не был готов слушать пуши). Считаем именно количество (не просто факт
+// непрочитанного) — в ростере это индикатор-счётчик, а не точка.
+const unreadDms = new Map(); // userId -> count
+let unreadBroadcastCount = 0;
 
+function unreadStatePayload() {
+  return { dms: Object.fromEntries(unreadDms), broadcast: unreadBroadcastCount };
+}
 function broadcastUnreadState() {
   if (rosterWin && !rosterWin.isDestroyed()) {
-    rosterWin.webContents.send('unread-state', { dms: [...unreadDms], broadcast: unreadBroadcast });
+    rosterWin.webContents.send('unread-state', unreadStatePayload());
   }
 }
 function markUnread(openPayload) {
   if (!openPayload) return;
-  if (openPayload.file === 'broadcast.html') unreadBroadcast = true;
-  else if (openPayload.type === 'dm') unreadDms.add(openPayload.id);
+  if (openPayload.file === 'broadcast.html') unreadBroadcastCount += 1;
+  else if (openPayload.type === 'dm') unreadDms.set(openPayload.id, (unreadDms.get(openPayload.id) || 0) + 1);
   // 'room' (общий чат) — в ростере нет отдельного пункта для него, бейджить пока негде, пропускаем
   broadcastUnreadState();
 }
@@ -63,7 +67,7 @@ function markUnread(openPayload) {
 // 'focus' в createWindow) — новое сообщение могло прийти, пока окно было открыто, но не в фокусе.
 function clearUnreadForWindow(file, payload) {
   let changed = false;
-  if (file === 'broadcast.html') { changed = unreadBroadcast; unreadBroadcast = false; }
+  if (file === 'broadcast.html') { changed = unreadBroadcastCount > 0; unreadBroadcastCount = 0; }
   else if (payload?.type === 'dm') changed = unreadDms.delete(payload.id);
   if (changed) broadcastUnreadState();
 }
@@ -384,7 +388,7 @@ ipcMain.handle('pick-download-folder', async (event) => {
 });
 
 ipcMain.handle('get-server-url', () => SERVER_URL);
-ipcMain.handle('get-unread-state', () => ({ dms: [...unreadDms], broadcast: unreadBroadcast }));
+ipcMain.handle('get-unread-state', () => unreadStatePayload());
 // Реальный статус простоя ПРЯМО СЕЙЧАС (не дожидаясь ближайшего 15-секундного тика) — нужен в
 // момент открытия нового WS-подключения, чтобы оно сразу сообщило правильный статус, а не
 // безусловно "в сети", даже если человек на самом деле давно отошёл (см. комментарий у onopen

@@ -200,7 +200,12 @@ function statusLabel(state, idleSince) {
   if (state === 'idle') return `Отошёл (${formatIdleDuration(idleSince)})`;
   return 'Не в сети';
 }
-document.getElementById('statusDot').title = statusLabel('offline');
+// Плюс строка "с какого момента" (since — от сервера, formatStatusSince из ui-kit.js), как в тултипах ростера.
+function statusTitle(state, idleSince, since) {
+  const sinceLine = formatStatusSince(state, since);
+  return sinceLine ? `${statusLabel(state, idleSince)}\n${sinceLine}` : statusLabel(state, idleSince);
+}
+document.getElementById('statusDot').title = statusTitle('offline');
 
 // Собеседник, подключённый ТОЛЬКО через веб-панель администратора (без единого реального хоста),
 // не может получить ни сообщение, ни файл — у веб-панели нет интерфейса чата. Композер и вложения
@@ -310,7 +315,7 @@ function connectWs() {
       const p = data.users[id];
       const state = p ? p.state : 'offline';
       document.getElementById('statusDot').className = 'dot ' + state;
-      document.getElementById('statusDot').title = statusLabel(state, p?.idleSince);
+      document.getElementById('statusDot').title = statusTitle(state, p?.idleSince, p?.since);
       updateComposerReachability(p?.hosts);
     }
     if (data.type !== 'message') return;

@@ -331,6 +331,7 @@ app.post('/api/register', (req, res) => {
     // вручную администратор (сотруднику лично или всему его отделу), либо стартовый администратор
     // из bootstrap-admin.js создаётся отдельно, не через эту форму.
     const info = insertUser.run(username, hash, username, 0, 0, Date.now());
+    invalidateUserIdsCache();
     const token = jwt.sign({ id: info.lastInsertRowid }, SECRET, { expiresIn: '30d' });
     res.json({ token, user: getUserById.get(info.lastInsertRowid) });
   } catch {
@@ -427,6 +428,7 @@ app.post('/api/admin/users', auth, requireCapability('can_admin'), (req, res) =>
   try {
     const hash = bcrypt.hashSync(password, 10);
     const info = insertUser.run(username, hash, username, can_broadcast ? 1 : 0, can_admin ? 1 : 0, Date.now());
+    invalidateUserIdsCache();
     if (department_id) updateUserDept.run(department_id, info.lastInsertRowid);
     broadcastUsersChanged();
     res.json({ ok: true, id: info.lastInsertRowid });
@@ -465,6 +467,7 @@ app.delete('/api/admin/users/:id', auth, requireCapability('can_admin'), (req, r
   const id = Number(req.params.id);
   if (id === req.user.id) return res.status(400).json({ error: 'Нельзя удалить свою же учётку' });
   deleteUserStmt.run(id);
+  invalidateUserIdsCache();
   broadcastUsersChanged();
   res.json({ ok: true });
 });
@@ -606,11 +609,26 @@ const wss = new WebSocketServer({ server });
 const online = new Map();   // userId -> Set(ws)              — для маршрутизации сообщений
 const connMeta = new Map(); // ws -> { userId, hostname, state } — для presence (может быть несколько ПК на юзера)
 
+// Кэш id всех пользователей — чтобы presenceSnapshot() не делал SELECT по таблице users на каждый
+// вызов (а вызывается он на каждое presence-событие: подключение/отключение/каждый статус-тик от
+// клиентов, т.е. часто). Сбрасывается при создании/удалении пользователя.
+let allUserIdsCache = null;
+function getAllUserIds() {
+  if (!allUserIdsCache) allUserIdsCache = db.prepare('SELECT id FROM users').all().map((r) => r.id);
+  return allUserIdsCache;
+}
+function invalidateUserIdsCache() { allUserIdsCache = null; }
+
+// userId -> { state, since } — момент последней смены АГРЕГИРОВАННОГО (по всем подключениям
+// пользователя) статуса. Живёт в памяти процесса (не в БД), поэтому переживает переподключения
+// конкретных WS, но не перезапуск сервера — после рестарта отсчёт для всех начнётся заново.
+const statusSince = new Map();
+
 function presenceSnapshot() {
-  const byUser = new Map();
+  const onlineByUser = new Map(); // не путать с внешней online (userId -> Set(ws) для маршрутизации)
   for (const meta of connMeta.values()) {
-    if (!byUser.has(meta.userId)) byUser.set(meta.userId, { state: 'offline', hosts: new Set(), idleSince: null });
-    const entry = byUser.get(meta.userId);
+    if (!onlineByUser.has(meta.userId)) onlineByUser.set(meta.userId, { state: 'offline', hosts: new Set(), idleSince: null });
+    const entry = onlineByUser.get(meta.userId);
     entry.hosts.add(meta.hostname || 'неизвестный ПК');
     if (meta.state === 'active') { entry.state = 'active'; entry.idleSince = null; }
     else if (meta.state === 'idle' && entry.state !== 'active') {
@@ -620,8 +638,21 @@ function presenceSnapshot() {
       if (meta.idleSince && (!entry.idleSince || meta.idleSince < entry.idleSince)) entry.idleSince = meta.idleSince;
     }
   }
+
+  const now = Date.now();
   const result = {};
-  for (const [uid, v] of byUser) result[uid] = { state: v.state, hosts: [...v.hosts], idleSince: v.idleSince };
+  for (const uid of getAllUserIds()) {
+    const entry = onlineByUser.get(uid);
+    const state = entry ? entry.state : 'offline';
+    const prev = statusSince.get(uid);
+    if (!prev || prev.state !== state) statusSince.set(uid, { state, since: now });
+    result[uid] = {
+      state,
+      hosts: entry ? [...entry.hosts] : [],
+      idleSince: entry ? entry.idleSince : null,
+      since: statusSince.get(uid).since, // с какого момента текущий статус действует — для тултипа в клиенте
+    };
+  }
   return result;
 }
 
