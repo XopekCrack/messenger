@@ -82,9 +82,19 @@
   .section.collapsed .chev { transform: rotate(-90deg); }
   .section .stitle { font-size: 10.5px; color: var(--muted); letter-spacing: .5px; font-weight: 700; }
   .section .scount { font-size: 10.5px; color: var(--muted); font-weight: 600; font-variant-numeric: tabular-nums; }
-  .dept-rows.collapsed { display: none; }
+  /* Сворачивание отдела — плавное (max-height), а не мгновенный display:none. Высота содержимого
+     заранее неизвестна (зависит от числа людей в отделе), поэтому конкретное значение max-height
+     на каждый показ/скрытие выставляет JS (см. animateDeptRows) через реально измеренный
+     scrollHeight — иначе пришлось бы либо угадывать с запасом (как у #profilePanel — там это
+     осознанный компромисс без анимации по существу), либо обрезать контент отдела побольше.
+     overflow:hidden обязателен — иначе max-height не будет ничего скрывать. */
+  .dept-rows { overflow: hidden; transition: max-height .2s ease; }
 
   .row { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 9px; cursor: pointer; transition: background .12s; }
+  /* Интервал между СОСЕДНИМИ строками сотрудников — короче стандартного padding-based (на ~30%),
+     но только между ними: у первой строки отдела нет предыдущего .row (это заголовок отдела), так
+     что отступ от заголовка не трогается, как и отступ до следующего отдела/конца списка. */
+  .row + .row { margin-top: -4px; }
   .row:hover { background: var(--panel-2); }
   .row .n { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
   .row .me-tag { font-weight: 500; font-size: 10.5px; color: var(--muted); margin-left: 6px; display: none; }
@@ -497,10 +507,37 @@ function deptOnlineCount(users) {
   return `${on}/${users.length}`;
 }
 
-function toggleDept(key) {
-  if (collapsedDepts.has(key)) collapsedDepts.delete(key); else collapsedDepts.add(key);
+// Разворачивает/сворачивает отдел на месте (без renderList() — тот сносит и пересоздаёт весь DOM,
+// из-за чего анимация была бы не на чём проигрывать). section.nextElementSibling — это .dept-rows,
+// они всегда идут парой в этом порядке, см. их создание в renderList() ниже.
+function toggleDept(key, section) {
+  const willCollapse = !collapsedDepts.has(key);
+  if (willCollapse) collapsedDepts.add(key); else collapsedDepts.delete(key);
   localStorage.setItem('collapsedDepts', JSON.stringify([...collapsedDepts]));
-  renderList();
+
+  const rows = section.nextElementSibling;
+  if (!rows || !rows.classList.contains('dept-rows')) { renderList(); return; } // подстраховка на случай рассинхрона разметки
+
+  section.classList.toggle('collapsed', willCollapse);
+  section.title = willCollapse ? 'Показать сотрудников отдела' : 'Скрыть сотрудников отдела';
+  animateDeptRows(rows, willCollapse);
+}
+
+function animateDeptRows(rows, collapsing) {
+  if (collapsing) {
+    rows.style.maxHeight = rows.scrollHeight + 'px'; // фиксируем текущую (полную) высоту явным числом...
+    void rows.offsetHeight; // ...форсируем reflow, чтобы браузер зафиксировал её ДО следующего шага...
+    rows.style.maxHeight = '0px'; // ...и только теперь анимируем к нулю
+  } else {
+    rows.style.maxHeight = rows.scrollHeight + 'px'; // scrollHeight измеряется верно, даже пока сам элемент схлопнут
+    rows.addEventListener('transitionend', function onEnd(e) {
+      if (e.propertyName !== 'max-height') return;
+      rows.removeEventListener('transitionend', onEnd);
+      // Снимаем ограничение по завершении — иначе список отдела мог бы обрезаться, если позже
+      // в него добавится сотрудник (перевод из другого отдела и т.п.), а высота осталась бы старой.
+      rows.style.maxHeight = '';
+    });
+  }
 }
 
 // Пользователь, у которого сейчас нет ни одного "живого" подключения (только веб-панель
@@ -631,11 +668,12 @@ function renderList() {
     section.dataset.dept = key;
     section.title = collapsed ? 'Показать сотрудников отдела' : 'Скрыть сотрудников отдела';
     section.innerHTML = `<span class="chev">${uiIcon('chevron')}</span><span class="stitle">${key}</span><span class="scount">${deptOnlineCount(users)}</span>`;
-    section.onclick = () => toggleDept(key);
+    section.onclick = () => toggleDept(key, section);
     list.appendChild(section);
 
     const rowsWrap = document.createElement('div');
-    rowsWrap.className = 'dept-rows' + (collapsed ? ' collapsed' : '');
+    rowsWrap.className = 'dept-rows';
+    if (collapsed) rowsWrap.style.maxHeight = '0px'; // сразу схлопнуто, без анимации при первой отрисовке
     users.forEach(u => rowsWrap.appendChild(makeUserRow(u)));
     list.appendChild(rowsWrap);
   }

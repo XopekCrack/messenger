@@ -435,6 +435,7 @@ async function loadFeed() {
   hasUnreadDivider = firstUnreadIndex !== -1;
   items.forEach((b) => { if (b.id > maxKnownBroadcastId) maxKnownBroadcastId = b.id; });
   feed.scrollTop = feed.scrollHeight; // сразу показываем самую свежую рассылку, а не листаем сверху
+  maybeScheduleUnreadClear();
 }
 
 async function send() {
@@ -647,17 +648,16 @@ function renderHistoryItems(items) {
 // ---------- Живое обновление: новая рассылка появляется в ленте сразу, без переоткрытия окна ----------
 let hasUnreadDivider = false;
 let programmaticScroll = false; // чтобы наш собственный автоскролл вниз не считался "пользователь посмотрел"
+let unreadClearTimer = null;
 
 function addLiveBroadcast(b) {
   const feed = document.getElementById('feed');
   feed.querySelector('.empty')?.remove();
   feed.classList.remove('empty-state');
 
-  // Раньше полоска показывалась только если document.hasFocus() был false — на практике это
-  // ненадёжно (в Electron фокус между окнами не всегда трекается так, как ожидаешь) и полоску
-  // почти никогда не было видно. Теперь показываем её при любой живой рассылке безусловно, а
-  // прячем при первом же явном действии пользователя в этом окне (клик, скролл, возврат фокуса) —
-  // так гарантированно видно, что пришло новое, и она не мешает, если реально следишь за окном.
+  // Показываем полоску безусловно, при любой живой рассылке — не только когда окно не в фокусе
+  // (см. maybeScheduleUnreadClear ниже про то, почему само по себе окно "в фокусе" не должно
+  // прятать её мгновенно).
   if (!hasUnreadDivider) {
     feed.insertAdjacentHTML('beforeend', unreadDividerHtml());
     hasUnreadDivider = true;
@@ -671,15 +671,30 @@ function addLiveBroadcast(b) {
     programmaticScroll = true;
     feed.scrollTop = feed.scrollHeight;
   }
+  maybeScheduleUnreadClear();
 }
 
 function clearUnreadDivider() {
   if (!hasUnreadDivider) return;
+  clearTimeout(unreadClearTimer);
+  unreadClearTimer = null;
   document.getElementById('unreadDivider')?.remove();
   hasUnreadDivider = false;
   setLastSeenId(maxKnownBroadcastId); // "прочитано" — запоминаем, переживёт закрытие окна
 }
-window.addEventListener('focus', clearUnreadDivider);
+// Раньше полоска пряталась СРАЗУ по событию 'focus' окна — но это же событие синтетически срабатывает
+// и в момент самого открытия/показа окна (см. ready-to-show в main.js), а не только когда пользователь
+// осознанно переключился на уже открытое окно. Из-за этого при открытии окна с новыми объявлениями
+// (или сразу после появления живой рассылки, пока окно и так в фокусе) полоска исчезала мгновенно,
+// её было не увидеть — а должна оставаться, пока не кликнут по ленте или не пройдёт 3 секунды.
+function scheduleUnreadClear() {
+  clearTimeout(unreadClearTimer);
+  unreadClearTimer = setTimeout(clearUnreadDivider, 3000);
+}
+function maybeScheduleUnreadClear() {
+  if (hasUnreadDivider && document.hasFocus()) scheduleUnreadClear();
+}
+window.addEventListener('focus', maybeScheduleUnreadClear);
 document.getElementById('feed').addEventListener('click', clearUnreadDivider);
 document.getElementById('feed').addEventListener('scroll', () => {
   if (programmaticScroll) { programmaticScroll = false; return; } // это мы сами долистали, не пользователь
