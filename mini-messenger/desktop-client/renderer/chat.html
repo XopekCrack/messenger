@@ -88,13 +88,13 @@
      composer'е. Стоит ровно по вертикальному центру #textWrap: при border-radius, близком к
      половине высоты (почти "таблетка"), именно в центре края скругление касается его по
      вертикальной касательной — там меньше всего риск обрезаться overflow:hidden обёртки. */
-  #emojiBtn { position: absolute; top: 50%; right: 5px; transform: translateY(-50%); width: 24px; height: 24px; padding: 0; border: none; border-radius: 50%; background: transparent; color: var(--muted); cursor: pointer; display: flex; align-items: center; justify-content: center; }
-  #emojiBtn svg { width: 16px; height: 16px; }
+  #emojiBtn { position: absolute; top: 50%; right: 4px; transform: translateY(-50%); width: 29px; height: 29px; padding: 0; border: none; border-radius: 50%; background: transparent; color: var(--muted); cursor: pointer; display: flex; align-items: center; justify-content: center; }
+  #emojiBtn svg { width: 19px; height: 19px; }
   #emojiBtn:hover { color: var(--text); }
   #emojiBtn.active { color: var(--accent); }
 
   #emojiPanel {
-    position: absolute; bottom: 52px; right: 10px; width: 244px; max-height: 220px;
+    position: absolute; bottom: 52px; right: 10px; width: 232px; max-height: 220px;
     background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow);
     padding: 8px; display: grid; grid-template-columns: repeat(6, 1fr); gap: 2px; overflow-y: auto;
     opacity: 0; transform: translateY(6px) scale(.98); pointer-events: none;
@@ -102,7 +102,7 @@
     z-index: 30;
   }
   #emojiPanel.open { opacity: 1; transform: translateY(0) scale(1); pointer-events: auto; }
-  #emojiPanel button { width: 36px; height: 36px; border: none; background: transparent; border-radius: 8px; cursor: pointer; font-size: 23px; display: flex; align-items: center; justify-content: center; line-height: 1; }
+  #emojiPanel button { width: 32px; height: 32px; border: none; background: transparent; border-radius: 8px; cursor: pointer; font-size: 19px; display: flex; align-items: center; justify-content: center; line-height: 1; }
   #emojiPanel button:hover { background: var(--hover); }
 
   /* ---- Панель истории ---- */
