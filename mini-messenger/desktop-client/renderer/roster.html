@@ -88,6 +88,11 @@
      ниже про canReceiveMessages в ui-kit.js): не кликабелен, приглушён, без обычной подсветки при наведении. */
   .row.unreachable { opacity: .5; cursor: default; }
   .row.unreachable:hover { background: transparent; }
+  /* Индикатор непрочитанного — точка справа в строке (не путать с точкой присутствия слева).
+     Состояние приходит от главного процесса (см. desktop.onUnreadState) — он же считает, какое
+     окно сейчас открыто/в фокусе, и сбрасывает флаг при его открытии. */
+  .row .unread-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex-shrink: 0; margin-left: 6px; display: none; }
+  .row.unread .unread-dot { display: block; }
   .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--offline); flex-shrink: 0; }
   .dot.active { background: var(--online); box-shadow: 0 0 6px 0 var(--online); }
   .dot.idle { background: var(--afk); box-shadow: 0 0 6px 0 var(--afk); }
@@ -232,7 +237,7 @@
     </div>
   </div>
   <div id="historyRow" class="row" title="Открыть ленту всех рассылок">
-    <div class="badge-icon" id="historyRowIcon"></div><div class="n">Объявления</div>
+    <div class="badge-icon" id="historyRowIcon"></div><div class="n">Объявления</div><span class="unread-dot"></span>
   </div>
   <div id="list"></div>
 </div>
@@ -509,14 +514,28 @@ function applyReachability(row, u, p) {
     : (e) => e.preventDefault();
 }
 
+// ---------- Непрочитанные — состояние хранит и решает главный процесс (main.js), здесь только отрисовка ----------
+let unreadDmIds = new Set();
+let unreadBroadcastFlag = false;
+
+function applyUnreadState(state) {
+  unreadDmIds = new Set(state.dms || []);
+  unreadBroadcastFlag = !!state.broadcast;
+  document.querySelectorAll('#list .row[data-uid]').forEach((row) => {
+    row.classList.toggle('unread', unreadDmIds.has(Number(row.dataset.uid)));
+  });
+  document.getElementById('historyRow').classList.toggle('unread', unreadBroadcastFlag);
+}
+desktop.onUnreadState(applyUnreadState);
+
 function makeUserRow(u) {
   const isMe = u.id === me.id;
   const p = presence[u.id] || { state: 'offline', hosts: [] };
   const name = displayNameOf(u);
   const row = document.createElement('div');
-  row.className = 'row' + (isMe ? ' is-me' : '');
+  row.className = 'row' + (isMe ? ' is-me' : '') + (!isMe && unreadDmIds.has(u.id) ? ' unread' : '');
   row.dataset.uid = u.id; // нужно для точечного обновления статуса без пересборки всего списка
-  row.innerHTML = `<div class="dot ${p.state}"></div><div class="n">${name}${isMe ? ' <span class="me-tag">это вы</span>' : ''}</div>`;
+  row.innerHTML = `<div class="dot ${p.state}"></div><div class="n">${name}${isMe ? ' <span class="me-tag">это вы</span>' : ''}</div><span class="unread-dot"></span>`;
   if (isMe) {
     row.title = 'Профиль и настройки';
     row.onclick = toggleProfilePanel;
@@ -689,6 +708,7 @@ async function startApp() {
   document.getElementById('me-bar').onclick = toggleProfilePanel;
   document.getElementById('me-bar').title = 'Профиль и настройки';
   await refreshUsers();
+  applyUnreadState(await desktop.getUnreadState()); // на случай, если что-то пришло, пока ростер ещё не слушал unread-state
   connectWs();
   setInterval(refreshUsers, 20000);
 }

@@ -406,7 +406,7 @@ async function loadHistory() {
     lastHistory = { type, items };
     box.innerHTML = items.map(m => {
       const time = new Date(m.created_at).toLocaleString('ru-RU');
-      const files = (m.files || []).map(f => ` 📎 ${escapeHtml(f.name)}`).join('');
+      const files = (m.files || []).map(f => ` 📎 ${escapeHtml(f.name)}${f.exists === false ? ' (удалён с диска)' : ''}`).join('');
       return `<div class="m"><b>${m.from_user}:</b> ${escapeHtml(m.text)}${files}<span class="t">${time}</span></div>`;
     }).join('') || 'Сообщений пока нет';
   } catch (e) { box.innerHTML = 'Ошибка: ' + e.message; }

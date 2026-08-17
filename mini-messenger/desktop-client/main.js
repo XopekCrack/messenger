@@ -1,5 +1,5 @@
 // Главный процесс Electron — окна, трей, уведомления, настройки, отправка и скачивание файлов
-const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, Notification, powerMonitor, dialog, session, clipboard } = require('electron');
+const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, Notification, powerMonitor, dialog, session, clipboard, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
@@ -38,6 +38,36 @@ let tray = null;
 let isQuitting = false;
 const namedWins = new Map(); // "type:id" -> BrowserWindow (чаты, рассылки)
 
+// ---------- Непрочитанные — только в памяти на время работы приложения ----------
+// Источник истины один — главный процесс: у него уже есть вся нужная информация (какое окно сейчас
+// открыто/сфокусировано) в notify() ниже, откуда и вызывается markUnread. Ростер получает состояние
+// через unread-state (пуш при изменении) и get-unread-state (разовый запрос при своём старте — вдруг
+// что-то пришло, пока он ещё не был готов слушать пуши).
+const unreadDms = new Set(); // userId
+let unreadBroadcast = false;
+
+function broadcastUnreadState() {
+  if (rosterWin && !rosterWin.isDestroyed()) {
+    rosterWin.webContents.send('unread-state', { dms: [...unreadDms], broadcast: unreadBroadcast });
+  }
+}
+function markUnread(openPayload) {
+  if (!openPayload) return;
+  if (openPayload.file === 'broadcast.html') unreadBroadcast = true;
+  else if (openPayload.type === 'dm') unreadDms.add(openPayload.id);
+  // 'room' (общий чат) — в ростере нет отдельного пункта для него, бейджить пока негде, пропускаем
+  broadcastUnreadState();
+}
+// Открытие/фокус окна = прочитано. Вызывается и для уже открытого окна (существующая ветка
+// createWindow), и для только что созданного, и при возврате фокуса на уже открытое later (см.
+// 'focus' в createWindow) — новое сообщение могло прийти, пока окно было открыто, но не в фокусе.
+function clearUnreadForWindow(file, payload) {
+  let changed = false;
+  if (file === 'broadcast.html') { changed = unreadBroadcast; unreadBroadcast = false; }
+  else if (payload?.type === 'dm') changed = unreadDms.delete(payload.id);
+  if (changed) broadcastUnreadState();
+}
+
 function allWindows() {
   return [rosterWin, ...namedWins.values()].filter((w) => w && !w.isDestroyed());
 }
@@ -47,14 +77,31 @@ function debounce(fn, ms) {
   return (...args) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), ms); };
 }
 
+// Раньше запоминался только размер, не позиция — окно каждый раз пересоздавалось там, где Electron
+// сам решит (обычно по центру экрана), а не там, где его оставил пользователь.
 function attachSizePersistence(win, key) {
   const persist = debounce(() => {
     if (!settings.rememberWindowSize) return;
     const [width, height] = win.getSize();
-    settings[key] = { width, height };
+    const [x, y] = win.getPosition();
+    settings[key] = { width, height, x, y };
     saveSettings();
   }, 600);
   win.on('resize', persist);
+  win.on('move', persist);
+}
+
+// Сохранённая позиция могла остаться от монитора, который сейчас отключён (ноутбук унесли от
+// докстанции, второй монитор выключен и т.п.) — тогда окно открылось бы за пределами видимой
+// области и стало бы недоступно. Восстанавливаем позицию, только если она хотя бы частично
+// попадает в рабочую область какого-нибудь из подключённых сейчас мониторов.
+function clampToVisibleArea(x, y, width, height) {
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  const fits = screen.getAllDisplays().some((d) => {
+    const b = d.workArea;
+    return x < b.x + b.width && x + width > b.x && y < b.y + b.height && y + height > b.y;
+  });
+  return fits ? { x, y } : null;
 }
 
 // Кнопка "развернуть" в шапке должна показывать актуальную иконку (квадрат / два квадрата),
@@ -75,17 +122,21 @@ function sizeKeyForFile(file) {
 function createWindow(key, file, payload, size) {
   const existing = namedWins.get(key);
   if (existing && !existing.isDestroyed()) {
-    existing.focus();
+    existing.show(); // show() и так фокусирует — на случай, если окно почему-то было скрыто
+    clearUnreadForWindow(file, payload);
     return existing;
   }
   const sizeKey = sizeKeyForFile(file);
   const saved = sizeKey && settings.rememberWindowSize ? settings[sizeKey] : null;
+  const width = saved?.width || size?.width || 380;
+  const height = saved?.height || size?.height || 520;
+  const pos = clampToVisibleArea(saved?.x, saved?.y, width, height);
   const win = new BrowserWindow({
-    width: saved?.width || size?.width || 380,
-    height: saved?.height || size?.height || 520,
+    width, height, ...(pos || {}),
     minWidth: size?.minWidth || 300,
     minHeight: size?.minHeight || 360,
     frame: false,
+    show: false, // показываем только после ready-to-show — иначе видно, как окно дёргается/дорисовывается
     icon: APP_ICON_PATH,
     backgroundColor: settings.theme === 'light' ? '#f3f4f7' : '#191b20',
     alwaysOnTop: settings.alwaysOnTop,
@@ -97,21 +148,29 @@ function createWindow(key, file, payload, size) {
   });
   const qs = new URLSearchParams(payload).toString();
   win.loadFile(path.join(__dirname, 'renderer', file), { search: qs });
+  win.once('ready-to-show', () => win.show());
+  // Пользователь мог вернуться к уже открытому, но не сфокусированному окну (Alt+Tab, клик по
+  // панели задач) без повторного клика по контакту/значку в ростере — это тоже прочтение.
+  win.on('focus', () => clearUnreadForWindow(file, payload));
   namedWins.set(key, win);
   win.on('closed', () => namedWins.delete(key));
   attachWindowStateEvents(win);
   if (sizeKey) attachSizePersistence(win, sizeKey);
+  clearUnreadForWindow(file, payload);
   return win;
 }
 
 function createRoster() {
   const saved = settings.rememberWindowSize ? settings.rosterSize : null;
+  const width = saved?.width || 300;
+  const height = saved?.height || 620;
+  const pos = clampToVisibleArea(saved?.x, saved?.y, width, height);
   rosterWin = new BrowserWindow({
-    width: saved?.width || 300,
-    height: saved?.height || 620,
+    width, height, ...(pos || {}),
     minWidth: 260,
     minHeight: 420,
     frame: false,
+    show: false, // показываем только после ready-to-show — иначе видно, как окно дёргается/дорисовывается
     icon: APP_ICON_PATH,
     backgroundColor: settings.theme === 'light' ? '#f3f4f7' : '#191b20',
     alwaysOnTop: settings.alwaysOnTop,
@@ -122,6 +181,7 @@ function createRoster() {
     },
   });
   rosterWin.loadFile(path.join(__dirname, 'renderer', 'roster.html'));
+  rosterWin.once('ready-to-show', () => rosterWin.show());
   attachSizePersistence(rosterWin, 'rosterSize');
   attachWindowStateEvents(rosterWin);
 
@@ -324,6 +384,7 @@ ipcMain.handle('pick-download-folder', async (event) => {
 });
 
 ipcMain.handle('get-server-url', () => SERVER_URL);
+ipcMain.handle('get-unread-state', () => ({ dms: [...unreadDms], broadcast: unreadBroadcast }));
 // Реальный статус простоя ПРЯМО СЕЙЧАС (не дожидаясь ближайшего 15-секундного тика) — нужен в
 // момент открытия нового WS-подключения, чтобы оно сразу сообщило правильный статус, а не
 // безусловно "в сети", даже если человек на самом деле давно отошёл (см. комментарий у onopen
@@ -360,18 +421,17 @@ ipcMain.on('notify', (event, payload) => {
   const winSize = file === 'broadcast.html' ? { width: 420, height: 520, minWidth: 360, minHeight: 400 } : undefined;
 
   if (settings.openChatOnMessage && openPayload) {
-    const win = createWindow(key, file, openPayload, winSize);
-    win.show();
-    win.focus();
-    return; // само появление окна уже служит уведомлением
+    createWindow(key, file, openPayload, winSize); // само появление окна уже служит уведомлением и отмечает как прочитанное
+    return;
   }
 
   const targetWin = key ? namedWins.get(key) : null;
-  if (targetWin && !targetWin.isDestroyed() && targetWin.isFocused()) return; // уже читает этот чат — не дублируем
+  if (targetWin && !targetWin.isDestroyed() && targetWin.isFocused()) return; // уже читает этот чат — не дублируем, и это уже прочитано
 
+  markUnread(openPayload); // не читает прямо сейчас — считается непрочитанным до открытия/фокуса окна
   const n = new Notification({ title, body });
   n.on('click', () => {
-    if (openPayload) { const w = createWindow(key, file, openPayload, winSize); w.show(); w.focus(); }
+    if (openPayload) createWindow(key, file, openPayload, winSize);
     else { rosterWin.show(); rosterWin.focus(); }
   });
   n.show();

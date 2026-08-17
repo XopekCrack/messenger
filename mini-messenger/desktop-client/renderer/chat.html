@@ -41,6 +41,11 @@
   .msg .file .fmeta { flex: 1; min-width: 0; display: flex; flex-direction: column; }
   .msg .file .fn { display: block; font-weight: 600; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .msg .file .fs { color: var(--muted); font-size: 10.5px; }
+  /* Файл удалили с диска сервера (через веб-панель) — карточка та же по форме, но не ссылка, а
+     статус: приглушённая, некликабельная, с предупреждающей иконкой вместо файловой. */
+  .msg .file.file-deleted { cursor: default; }
+  .msg .file.file-deleted .fi { color: var(--muted); }
+  .msg .file.file-deleted .fn { color: var(--muted); }
   .msg .files-time { text-align: right; font-size: 10px; color: var(--muted); margin-top: 1px; }
   .day-sep { align-self: center; color: var(--muted); font-size: 10.5px; background: var(--panel-2); padding: 3px 10px; border-radius: 20px; margin: 4px 0; }
 
@@ -248,6 +253,11 @@ function bubbleHtml(m, { withDate } = {}) {
     // у последней — раньше время отнимало место только у последней карточки, и та казалась
     // урезанной по сравнению с остальными). Время сообщения — отдельной строкой под всеми файлами.
     const cards = files.map((f) => {
+      // Админ мог удалить файл с диска через веб-панель, не трогая саму переписку (см. normalizeRow
+      // в server.js) — вместо карточки, которая всё равно не скачается, показываем это прямо.
+      if (f.exists === false) {
+        return `<div class="file file-deleted"><span class="fi">${uiIcon('warn')}</span><span class="fmeta"><span class="fn">${escapeHtml(f.name || 'файл')}</span><span class="fs">Файл удалён с сервера</span></span></div>`;
+      }
       const href = `${serverUrl}${f.url}?token=${token}&name=${encodeURIComponent(f.name || 'файл')}`;
       return `<a class="file" href="${href}" data-name="${escapeAttr(f.name || 'файл')}"><span class="fi"><span class="fi-file">${uiIcon('file')}</span><span class="fi-download">${uiIcon('download')}</span><span class="fi-progress"><svg viewBox="0 0 24 24"><circle class="ring-bg" cx="12" cy="12" r="10"></circle><circle class="ring-bar" cx="12" cy="12" r="10"></circle></svg><span class="fi-pct"></span></span><span class="fi-check">${uiIcon('check')}</span></span><span class="fmeta"><span class="fn">${escapeHtml(f.name || 'файл')}</span><span class="fs">${fmtSize(f.size)}</span></span></a>`;
     }).join('');

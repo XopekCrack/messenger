@@ -129,6 +129,9 @@ function setSettingRaw(key, value) {
 
 // Старые сообщения хранили один файл в отдельных колонках (file_url/file_name/file_size), новые —
 // произвольное количество файлов в files_json. Приводим и то, и другое к единому виду files[].
+// Админ может удалить файл с диска через веб-панель, не трогая саму историю переписки (см.
+// DELETE /api/admin/files/:diskName ниже) — сообщение остаётся, но ссылка в нём мертва. exists
+// помечает такие файлы, чтобы клиент показал "файл удалён", а не сломанную/вечно грузящуюся карточку.
 function normalizeRow(row) {
   if (!row) return row;
   const { file_url, file_name, file_size, files_json, ...rest } = row;
@@ -138,7 +141,12 @@ function normalizeRow(row) {
   } else if (file_url) {
     files = [{ url: file_url, name: file_name, size: file_size }];
   }
+  files = files.map((f) => ({ ...f, exists: fileExistsForUrl(f.url) }));
   return { ...rest, files };
+}
+function fileExistsForUrl(url) {
+  const diskName = String(url || '').split('/').pop();
+  return !!diskName && fs.existsSync(path.join(uploadsDir, diskName));
 }
 
 const insertUser = db.prepare('INSERT INTO users (username, password_hash, display_name, can_broadcast, can_admin, created_at) VALUES (?, ?, ?, ?, ?, ?)');
