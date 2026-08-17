@@ -48,6 +48,12 @@
   .msg .file.file-deleted .fn { color: var(--muted); }
   .msg .files-time { text-align: right; font-size: 10px; color: var(--muted); margin-top: 1px; }
   .day-sep { align-self: center; color: var(--muted); font-size: 10.5px; background: var(--panel-2); padding: 3px 10px; border-radius: 20px; margin: 4px 0; }
+  /* Разделитель "Новые сообщения" — как в окне рассылок (см. addLiveBroadcast/loadFeed там же по
+     смыслу), только для входящих сообщений в чате. -webkit-app-region не задаём: разделитель лежит
+     внутри прокручиваемой ленты, а не в области с drag, так что переопределять там нечего. */
+  .unread-divider { display: flex; align-items: center; gap: 10px; margin: 2px 0; align-self: stretch; }
+  .unread-divider::before, .unread-divider::after { content: ''; flex: 1; height: 1px; background: var(--accent); opacity: .35; }
+  .unread-divider span { font-size: 10px; font-weight: 700; color: var(--accent); text-transform: uppercase; letter-spacing: .4px; white-space: nowrap; }
 
   #composer { display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--border); background: var(--panel); flex-shrink: 0; align-items: flex-end; }
   /* #text раньше сам был скруглённым (border-radius:18px) и одновременно overflow-y:auto — кастомный
@@ -271,13 +277,55 @@ function bubbleHtml(m, { withDate } = {}) {
   return `<div class="msg${own ? ' own' : ''}"><div class="who">${m.from_user}</div>${body}</div>`;
 }
 
+// ---------- "Новые сообщения" — та же логика, что в окне рассылок (см. addLiveBroadcast/loadFeed
+// там же по смыслу): полоска перед первым непрочитанным ВХОДЯЩИМ сообщением, прячется по клику или
+// прокрутке — но не мгновенно, а с трёхсекундной паузой (см. scheduleUnreadClear), чтобы её успели
+// увидеть, даже если клик/скролл случились почти сразу. Метка "последнее увиденное" хранится в
+// localStorage персонально на этот диалог (dm:id или room:id) — переживает закрытие окна. ----------
+const LAST_SEEN_KEY = `chatLastSeenTs:${type}:${id}`;
+function getLastSeenTs() { return Number(localStorage.getItem(LAST_SEEN_KEY)) || 0; }
+function setLastSeenTs(ts) { if (ts) localStorage.setItem(LAST_SEEN_KEY, String(ts)); }
+let maxKnownTs = getLastSeenTs(); // растёт по мере отрисовки/получения входящих в этой сессии
+let hasUnreadDivider = false;
+let unreadClearTimer = null;
+let programmaticScroll = false; // чтобы автоскролл к новому сообщению не считался "пользователь прокрутил"
+function unreadDividerHtml() { return `<div class="unread-divider" id="unreadDivider"><span>Новые сообщения</span></div>`; }
+
 function addMessage(m) {
   const box = document.getElementById('messages');
+  const incoming = m.from_id !== me.id;
+  // getLastSeenTs() (не 0) — иначе при самом первом открытии диалога (метки ещё нет) полоска
+  // отметила бы новым вообще всё, что было отправлено сегодня, а не только реально непрочитанное.
+  if (incoming && !hasUnreadDivider && getLastSeenTs() && m.created_at > getLastSeenTs()) {
+    box.insertAdjacentHTML('beforeend', unreadDividerHtml());
+    hasUnreadDivider = true;
+  }
   const div = document.createElement('div');
   div.innerHTML = bubbleHtml(m);
   box.appendChild(div.firstElementChild);
+  if (incoming && m.created_at > maxKnownTs) maxKnownTs = m.created_at;
+  programmaticScroll = true;
   box.scrollTop = box.scrollHeight;
 }
+
+function clearUnreadDivider() {
+  if (!hasUnreadDivider) return;
+  clearTimeout(unreadClearTimer);
+  unreadClearTimer = null;
+  document.getElementById('unreadDivider')?.remove();
+  hasUnreadDivider = false;
+  setLastSeenTs(maxKnownTs); // "прочитано" — запоминаем, переживёт закрытие окна
+}
+function scheduleUnreadClear() {
+  if (!hasUnreadDivider) return;
+  clearTimeout(unreadClearTimer);
+  unreadClearTimer = setTimeout(clearUnreadDivider, 3000);
+}
+document.addEventListener('click', scheduleUnreadClear);
+document.getElementById('messages').addEventListener('scroll', () => {
+  if (programmaticScroll) { programmaticScroll = false; return; } // это мы сами долистали, не пользователь
+  scheduleUnreadClear();
+});
 
 // Чат "очищается" визуально каждый день — при обычном открытии показываем только сегодняшние
 // сообщения; вся остальная переписка никуда не пропадает и доступна через кнопку "История".

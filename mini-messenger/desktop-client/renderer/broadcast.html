@@ -435,7 +435,6 @@ async function loadFeed() {
   hasUnreadDivider = firstUnreadIndex !== -1;
   items.forEach((b) => { if (b.id > maxKnownBroadcastId) maxKnownBroadcastId = b.id; });
   feed.scrollTop = feed.scrollHeight; // сразу показываем самую свежую рассылку, а не листаем сверху
-  maybeScheduleUnreadClear();
 }
 
 async function send() {
@@ -655,9 +654,7 @@ function addLiveBroadcast(b) {
   feed.querySelector('.empty')?.remove();
   feed.classList.remove('empty-state');
 
-  // Показываем полоску безусловно, при любой живой рассылке — не только когда окно не в фокусе
-  // (см. maybeScheduleUnreadClear ниже про то, почему само по себе окно "в фокусе" не должно
-  // прятать её мгновенно).
+  // Показываем полоску безусловно, при любой живой рассылке, независимо от фокуса окна.
   if (!hasUnreadDivider) {
     feed.insertAdjacentHTML('beforeend', unreadDividerHtml());
     hasUnreadDivider = true;
@@ -671,7 +668,6 @@ function addLiveBroadcast(b) {
     programmaticScroll = true;
     feed.scrollTop = feed.scrollHeight;
   }
-  maybeScheduleUnreadClear();
 }
 
 function clearUnreadDivider() {
@@ -682,23 +678,21 @@ function clearUnreadDivider() {
   hasUnreadDivider = false;
   setLastSeenId(maxKnownBroadcastId); // "прочитано" — запоминаем, переживёт закрытие окна
 }
-// Раньше полоска пряталась СРАЗУ по событию 'focus' окна — но это же событие синтетически срабатывает
-// и в момент самого открытия/показа окна (см. ready-to-show в main.js), а не только когда пользователь
-// осознанно переключился на уже открытое окно. Из-за этого при открытии окна с новыми объявлениями
-// (или сразу после появления живой рассылки, пока окно и так в фокусе) полоска исчезала мгновенно,
-// её было не увидеть — а должна оставаться, пока не кликнут по ленте или не пройдёт 3 секунды.
+// Раньше таймер запускало событие 'focus' окна — но оно срабатывает и синтетически, просто от
+// показа окна (см. ready-to-show в main.js), а не только когда пользователь осознанно кликнул в уже
+// открытое окно. Из-за этого полоска либо пряталась мгновенно при обычном открытии, либо (если окно
+// открывалось без явного фокуса — например, по клику на уведомление при выключенном автооткрытии)
+// вообще не запускала таймер и просто никогда не исчезала сама. Теперь таймер стартует только по
+// настоящему клику или прокрутке — недвусмысленный сигнал, что пользователь смотрит в окно.
 function scheduleUnreadClear() {
+  if (!hasUnreadDivider) return;
   clearTimeout(unreadClearTimer);
   unreadClearTimer = setTimeout(clearUnreadDivider, 3000);
 }
-function maybeScheduleUnreadClear() {
-  if (hasUnreadDivider && document.hasFocus()) scheduleUnreadClear();
-}
-window.addEventListener('focus', maybeScheduleUnreadClear);
-document.getElementById('feed').addEventListener('click', clearUnreadDivider);
+document.addEventListener('click', scheduleUnreadClear);
 document.getElementById('feed').addEventListener('scroll', () => {
   if (programmaticScroll) { programmaticScroll = false; return; } // это мы сами долистали, не пользователь
-  clearUnreadDivider();
+  scheduleUnreadClear();
 });
 
 let ws;
