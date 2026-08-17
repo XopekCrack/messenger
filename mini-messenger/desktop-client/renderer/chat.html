@@ -23,7 +23,9 @@
   .msg.own { background: var(--own); align-self: flex-end; }
   .msg .who { font-size: 10.5px; color: var(--accent); font-weight: 600; margin-bottom: 2px; }
   .msg.own .who { display: none; }
-  .msg .txt { white-space: pre-wrap; word-break: break-word; line-height: 1.4; }
+  /* line-height чуть больше обычного (1.4 -> 1.6) — .twemoji теперь 1.8em, крупнее межстрочного
+     интервала; без этого запаса соседние строки могли бы наезжать друг на друга вокруг emoji. */
+  .msg .txt { white-space: pre-wrap; word-break: break-word; line-height: 1.6; }
   /* Подсветка совпадений при поиске по истории — см. highlightHtml/runSearch. */
   mark.hl { background: var(--accent); color: #fff; border-radius: 3px; padding: 0 1px; }
   .msg .time { float: right; margin: 3px 0 -3px 12px; font-size: 9px; color: var(--muted); }
@@ -94,7 +96,7 @@
   #emojiBtn.active { color: var(--accent); }
 
   #emojiPanel {
-    position: absolute; bottom: 52px; right: 10px; width: 232px; max-height: 220px;
+    position: absolute; bottom: 58px; right: 10px; width: 256px; max-height: 230px;
     background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow);
     padding: 8px; display: grid; grid-template-columns: repeat(6, 1fr); gap: 2px; overflow-y: auto;
     opacity: 0; transform: translateY(6px) scale(.98); pointer-events: none;
@@ -102,11 +104,11 @@
     z-index: 30;
   }
   #emojiPanel.open { opacity: 1; transform: translateY(0) scale(1); pointer-events: auto; }
-  #emojiPanel button { width: 32px; height: 32px; border: none; background: transparent; border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; line-height: 1; }
+  #emojiPanel button { width: 38px; height: 38px; border: none; background: transparent; border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; line-height: 1; }
   #emojiPanel button:hover { background: var(--hover); }
-  /* Картинка внутри кнопки (см. emojiHtml) — переопределяем базовый .twemoji (1.2em, для инлайна в
-     тексте сообщений) на фиксированный размер, подходящий под 32px-кнопку сетки выбора. */
-  #emojiPanel button img.twemoji { width: 24px; height: 24px; vertical-align: unset; }
+  /* Картинка внутри кнопки (см. emojiHtml) — переопределяем базовый .twemoji (для инлайна в тексте
+     сообщений) на фиксированный размер, подходящий под кнопку сетки выбора. */
+  #emojiPanel button img.twemoji { width: 31px; height: 31px; vertical-align: unset; }
 
   /* ---- Панель истории ---- */
   /* Сообщения и строка ввода прячутся плавно (fade + сдвиг вниз), а не мгновенным display:none —
