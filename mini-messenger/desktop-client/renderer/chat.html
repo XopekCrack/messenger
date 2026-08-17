@@ -20,12 +20,12 @@
   .msg .who { font-size: 10.5px; color: var(--accent); font-weight: 600; margin-bottom: 2px; }
   .msg.own .who { display: none; }
   .msg .txt { white-space: pre-wrap; word-break: break-word; line-height: 1.4; }
-  .msg .time { float: right; margin: 3px 0 -3px 12px; font-size: 10px; color: var(--muted); }
+  .msg .time { float: right; margin: 3px 0 -3px 12px; font-size: 7px; color: var(--muted); }
   /* Галочка прочтения — только у своих сообщений в личной переписке (см. readTickHtml): серая, пока
      собеседник не увидел сообщение, синяя — после того, как он его прочитал (тот же сигнал, что
      скрывает разделитель "Новые сообщения" у него — клик или прокрутка, см. clearUnreadDivider). */
-  .read-tick { display: inline-flex; vertical-align: -2px; margin-left: 4px; color: var(--muted); }
-  .read-tick svg { display: block; width: 12px; height: 12px; }
+  .read-tick { display: inline-flex; vertical-align: -1px; margin-left: 3px; color: var(--muted); }
+  .read-tick svg { display: block; width: 8px; height: 8px; }
   .read-tick.read { color: var(--accent-2); }
   .msg .files-block { display: flex; flex-direction: column; gap: 6px; }
   .msg .file { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--hover); border-radius: 8px; text-decoration: none; color: var(--text); min-width: 0; }
@@ -52,7 +52,7 @@
   .msg .file.file-deleted { cursor: default; }
   .msg .file.file-deleted .fi { color: var(--muted); }
   .msg .file.file-deleted .fn { color: var(--muted); }
-  .msg .files-time { text-align: right; font-size: 10px; color: var(--muted); margin-top: 1px; }
+  .msg .files-time { text-align: right; font-size: 7px; color: var(--muted); margin-top: 1px; }
   .day-sep { align-self: center; color: var(--muted); font-size: 10.5px; background: var(--panel-2); padding: 3px 10px; border-radius: 20px; margin: 4px 0; }
   /* Разделитель "Новые сообщения" — как в окне рассылок (см. addLiveBroadcast/loadFeed там же по
      смыслу), только для входящих сообщений в чате. -webkit-app-region не задаём: разделитель лежит
@@ -61,27 +61,34 @@
   .unread-divider::before, .unread-divider::after { content: ''; flex: 1; height: 1px; background: var(--accent); opacity: .35; }
   .unread-divider span { font-size: 10px; font-weight: 700; color: var(--accent); text-transform: uppercase; letter-spacing: .4px; white-space: nowrap; }
 
-  #composer { display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--border); background: var(--panel); flex-shrink: 0; align-items: flex-end; }
+  #composer { position: relative; display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--border); background: var(--panel); flex-shrink: 0; align-items: flex-end; }
   /* #text раньше сам был скруглённым (border-radius:18px) и одновременно overflow-y:auto — кастомный
      ::-webkit-scrollbar (см. theme.css) в Chromium не обрезается border-radius самого элемента, из-за
      чего прямоугольная полоса скролла торчала за пределы скруглённых углов. Обёртка берёт на себя
      скругление и overflow:hidden (обрезает), а сам textarea внутри — прямоугольный, со своим
      скроллом, который обрезается уже обёрткой. */
-  #textWrap { flex: 1; min-width: 0; border: 1px solid var(--border); border-radius: 18px; background: var(--bg); overflow: hidden; }
+  #textWrap { position: relative; flex: 1; min-width: 0; border: 1px solid var(--border); border-radius: 18px; background: var(--bg); overflow: hidden; }
   #textWrap:focus-within { border-color: var(--accent); }
-  #text { display: block; width: 100%; padding: 9px 12px; border: none; background: transparent; color: var(--text); font-size: 13px; font-family: inherit; resize: none; max-height: 120px; overflow-y: auto; line-height: 1.35; box-sizing: border-box; }
+  #text { display: block; width: 100%; padding: 9px 34px 9px 12px; border: none; background: transparent; color: var(--text); font-size: 13px; font-family: inherit; resize: none; max-height: 120px; overflow-y: auto; line-height: 1.35; box-sizing: border-box; }
   #text:focus { outline: none; }
-  #composer .round { width: 40px; height: 40px; border-radius: 50%; border: none; cursor: pointer; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
-  #composer .round svg { width: 20px; height: 20px; }
-  #attach, #emojiBtn { background: var(--bg); border: 1px solid var(--border); color: var(--muted); }
-  #attach:hover, #emojiBtn:hover { color: var(--text); }
-  #emojiBtn.active { color: var(--accent); }
+  #composer .round { width: 38px; height: 38px; border-radius: 50%; border: none; cursor: pointer; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+  #composer .round svg { width: 19px; height: 19px; }
+  #attach { background: var(--bg); border: 1px solid var(--border); color: var(--muted); }
+  #attach:hover { color: var(--text); }
   #send { background: var(--accent); color: #fff; }
-  #send svg { width: 19px; height: 19px; }
+  #send svg { width: 18px; height: 18px; }
 
-  #emojiWrap { position: relative; flex-shrink: 0; }
+  /* Кнопка эмодзи — внутри поля ввода справа (как в Telegram), а не отдельной круглой кнопкой в
+     composer'е. Стоит ровно по вертикальному центру #textWrap: при border-radius, близком к
+     половине высоты (почти "таблетка"), именно в центре края скругление касается его по
+     вертикальной касательной — там меньше всего риск обрезаться overflow:hidden обёртки. */
+  #emojiBtn { position: absolute; top: 50%; right: 5px; transform: translateY(-50%); width: 24px; height: 24px; padding: 0; border: none; border-radius: 50%; background: transparent; color: var(--muted); cursor: pointer; display: flex; align-items: center; justify-content: center; }
+  #emojiBtn svg { width: 16px; height: 16px; }
+  #emojiBtn:hover { color: var(--text); }
+  #emojiBtn.active { color: var(--accent); }
+
   #emojiPanel {
-    position: absolute; bottom: 48px; left: 0; width: 232px; max-height: 220px;
+    position: absolute; bottom: 52px; right: 10px; width: 232px; max-height: 220px;
     background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow);
     padding: 8px; display: grid; grid-template-columns: repeat(6, 1fr); gap: 2px; overflow-y: auto;
     opacity: 0; transform: translateY(6px) scale(.98); pointer-events: none;
@@ -183,12 +190,12 @@
 <div id="messages"></div>
 <div id="composer">
   <button class="round" id="attach" title="Прикрепить файл"></button>
-  <div id="emojiWrap">
-    <button class="round" id="emojiBtn" title="Эмодзи"></button>
-    <div id="emojiPanel"></div>
-  </div>
   <input type="file" id="fileInput" multiple style="display:none">
-  <div id="textWrap"><textarea id="text" placeholder="Написать сообщение..." rows="1"></textarea></div>
+  <div id="textWrap">
+    <textarea id="text" placeholder="Написать сообщение..." rows="1"></textarea>
+    <button type="button" id="emojiBtn" title="Эмодзи"></button>
+  </div>
+  <div id="emojiPanel"></div>
   <button class="round" id="send" onclick="send()" title="Отправить"></button>
 </div>
 
@@ -500,7 +507,7 @@ emojiPanel.addEventListener('click', (e) => {
   textEl.dispatchEvent(new Event('input')); // пересчитать высоту textarea, если добавили несколько подряд
 });
 document.addEventListener('click', (e) => {
-  if (emojiPanel.classList.contains('open') && !e.target.closest('#emojiWrap')) closeEmojiPanel();
+  if (emojiPanel.classList.contains('open') && !e.target.closest('#emojiBtn') && !e.target.closest('#emojiPanel')) closeEmojiPanel();
 });
 
 async function uploadFile(file) {

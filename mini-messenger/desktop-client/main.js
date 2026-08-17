@@ -189,6 +189,22 @@ function createRoster() {
   attachSizePersistence(rosterWin, 'rosterSize');
   attachWindowStateEvents(rosterWin);
 
+  // На Windows настоящее завершение сеанса (выключение/перезагрузка ПК) доходит до окна тем же
+  // событием 'close', что и обычный клик по крестику — а обработчик ниже в норме отменяет close
+  // (preventDefault) и просто прячет окно в трей. Во время реального выключения это "отменённое"
+  // закрытие сбивает штатную последовательность завершения Chromium и на Windows 7 роняло процесс
+  // с "unknown software exception (0x80000003)" прямо в момент выключения/перезагрузки ПК (см.
+  // https://github.com/electron/electron/issues/34311 — тот же паттерн: close-хендлер, который не
+  // даёt окну закрыться, ломает штатную обработку WM_QUERYENDSESSION). WM_QUERYENDSESSION (0x0011)
+  // приходит раньше 'close' — перехватываем его напрямую и заранее взводим isQuitting, чтобы
+  // обработчик close ниже в этом случае пропустил окно к настоящему закрытию, а не спрятал его.
+  if (process.platform === 'win32') {
+    rosterWin.hookWindowMessage(0x0011, () => {
+      isQuitting = true;
+      app.quit();
+    });
+  }
+
   // Не закрываем насовсем — сворачиваем в трей, чтобы приложение продолжало получать сообщения
   rosterWin.on('close', (e) => {
     if (!isQuitting) {
