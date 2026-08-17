@@ -204,7 +204,18 @@
   // тельности в <img class="twemoji" src="emoji/<codepoint>.png">, остальной текст не трогает.
   window.emojiHtml = (html) => {
     if (!window.twemoji) return html; // twemoji.min.js не подключён на этой странице — не трогаем текст
-    return window.twemoji.parse(html, { base: 'emoji/', ext: '.png', className: 'twemoji' });
+    // ВАЖНО: без явного callback twemoji.parse сам собирает src как base + size + '/' + icon + ext,
+    // а size по умолчанию — "72x72" (даже если its не задавать) — то есть он пытался бы грузить
+    // emoji/72x72/1f600.png, которого нет: у нас все файлы плоско лежат прямо в emoji/1f600.png.
+    // Из-за этого КАЖДАЯ картинка 404-илась и вместо неё сразу срабатывал текстовый fallback (см.
+    // ниже) — эмодзи молча продолжали рисоваться обычным текстом, а вся возня с размерами .twemoji
+    // была бы просто без эффекта. Задаём свой callback, который строит путь без лишней папки.
+    return window.twemoji.parse(html, {
+      callback: (icon, options) => options.base + icon + options.ext,
+      base: 'emoji/',
+      ext: '.png',
+      className: 'twemoji',
+    });
   };
   // У двух-трёх редких emoji (напр. ❤️, ✌️) twemoji.js версии 14 определяет имя файла чуть иначе,
   // чем формат самого набора картинок (лишняя/недостающая приставка "-fe0f") — вместо того чтобы
