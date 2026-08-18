@@ -55,6 +55,7 @@
     folder: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6.5a1.5 1.5 0 011.5-1.5h4l2 2.5h8.5A1.5 1.5 0 0120.5 9v9a1.5 1.5 0 01-1.5 1.5H4.5A1.5 1.5 0 013 18V6.5z"/></svg>',
     emoji: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9.3"/><path d="M8.3 10.2h.01M15.7 10.2h.01"/><path d="M8 14.3c1 1.4 2.4 2.1 4 2.1s3-.7 4-2.1"/></svg>',
     monitor: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="12" rx="1.5"/><path d="M8.5 20h7M12 16.5V20"/></svg>',
+    gear: '<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path fill-rule="evenodd" d="M10.83 2.77 L10.71 1.78 L13.29 1.78 L13.17 2.77 L17.69 4.65 L18.31 3.86 L20.14 5.69 L19.35 6.31 L21.23 10.83 L22.22 10.71 L22.22 13.29 L21.23 13.17 L19.35 17.69 L20.14 18.31 L18.31 20.14 L17.69 19.35 L13.17 21.23 L13.29 22.22 L10.71 22.22 L10.83 21.23 L6.31 19.35 L5.69 20.14 L3.86 18.31 L4.65 17.69 L2.77 13.17 L1.78 13.29 L1.78 10.71 L2.77 10.83 L4.65 6.31 L3.86 5.69 L5.69 3.86 L6.31 4.65 Z M12 9.3A2.7 2.7 0 1 0 12 14.7A2.7 2.7 0 1 0 12 9.3Z"/></svg>',
   };
   window.uiIcon = (name) => ICONS[name] || '';
 

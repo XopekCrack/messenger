@@ -45,8 +45,10 @@
   #me-bar:hover { background: var(--panel-2); }
   #me-bar.open { background: var(--panel-2); }
   #me-bar.searching { opacity: 0; pointer-events: none; }
-  #me-bar .chev { margin-left: auto; color: var(--muted); display: flex; flex-shrink: 0; transform: rotate(-90deg); transition: transform .15s; }
-  #me-bar.open .chev { transform: rotate(0deg); }
+  /* Шестерёнка вместо стрелки — крутится (не просто разворачивается) при открытии/закрытии панели
+     настроек, см. #me-bar.open ниже. */
+  #me-bar .gear { margin-left: auto; color: var(--muted); display: flex; flex-shrink: 0; transform: rotate(0deg); transition: transform .35s cubic-bezier(.4, 0, .2, 1), color .15s; }
+  #me-bar.open .gear { transform: rotate(180deg); color: var(--text); }
   .avatar { width: 26px; height: 26px; border-radius: 50%; background: linear-gradient(135deg, var(--accent), #8f6ee8); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 10.5px; font-weight: 700; flex-shrink: 0; position: relative; }
   .avatar .dot { position: absolute; right: -2px; bottom: -2px; border: 2px solid var(--panel); -webkit-app-region: no-drag; }
   /* flex:1 + nowrap/ellipsis — гарантирует, что #topSlot всегда ровно 46px высотой (для top:46px у
@@ -137,9 +139,13 @@
   #profilePanel .theme-row .info { flex: 1; }
   #profilePanel .theme-row .t { font-weight: 600; font-size: 12px; }
   #profilePanel .theme-row .d { color: var(--muted); font-size: 11px; margin-top: 2px; line-height: 1.35; }
-  #profilePanel .theme-switch { display: flex; align-items: center; gap: 4px; background: var(--panel-2); border-radius: 20px; padding: 3px; flex-shrink: 0; align-self: center; }
-  #profilePanel .theme-switch button { width: 28px; height: 28px; border-radius: 50%; border: none; background: transparent; color: var(--muted); cursor: pointer; display: flex; align-items: center; justify-content: center; }
-  #profilePanel .theme-switch button.active { background: var(--accent); color: #fff; }
+  #profilePanel .theme-switch { position: relative; display: flex; align-items: center; gap: 4px; background: var(--panel-2); border-radius: 20px; padding: 3px; flex-shrink: 0; align-self: center; }
+  /* Плавный слайдер: кружок-подложка едет между кнопками (transform), а не мгновенно перекрашивается
+     то одна, то другая кнопка — сами кнопки поверх него прозрачные, меняется только цвет иконки. */
+  #profilePanel .theme-switch .ts-thumb { position: absolute; top: 3px; left: 3px; width: 28px; height: 28px; border-radius: 50%; background: var(--accent); transition: transform .22s cubic-bezier(.4,0,.2,1); }
+  #profilePanel .theme-switch.light .ts-thumb { transform: translateX(32px); }
+  #profilePanel .theme-switch button { position: relative; z-index: 1; width: 28px; height: 28px; border-radius: 50%; border: none; background: transparent; color: var(--muted); cursor: pointer; display: flex; align-items: center; justify-content: center; transition: color .22s ease; }
+  #profilePanel .theme-switch button.active { color: #fff; }
   #profilePanel .option { display: flex; align-items: center; gap: 10px; padding: 10px; border-radius: 9px; background: var(--panel); border: 1px solid var(--border); cursor: pointer; }
   #profilePanel .option:hover { background: var(--panel-2); }
   #profilePanel .option .opt-text { flex: 1; min-width: 0; }
@@ -189,7 +195,7 @@
     <div id="me-bar">
       <div class="avatar" id="meAvatar"><span class="dot active" id="meDot" title="В сети"></span></div>
       <div class="name" id="meName"></div>
-      <span class="chev"></span>
+      <span class="gear"></span>
     </div>
     <div id="searchBar"></div>
   </div>
@@ -202,6 +208,7 @@
           <div class="d">Применяется сразу ко всем открытым окнам клиента.</div>
         </div>
         <div class="theme-switch">
+          <span class="ts-thumb"></span>
           <button id="ppThemeDark" title="Тёмная"></button>
           <button id="ppThemeLight" title="Светлая"></button>
         </div>
@@ -394,6 +401,7 @@ const PP_CHECKBOX_IDS = [
 function paintProfileTheme(theme) {
   document.getElementById('ppThemeDark').classList.toggle('active', theme !== 'light');
   document.getElementById('ppThemeLight').classList.toggle('active', theme === 'light');
+  document.querySelector('#profilePanel .theme-switch').classList.toggle('light', theme === 'light');
 }
 function paintProfileDownloadPath(p) {
   document.getElementById('ppDownloadPathLabel').textContent = p || 'Каждый раз спрашивать, куда сохранить';
@@ -730,7 +738,7 @@ async function startApp() {
   document.getElementById('app').classList.add('active');
   document.getElementById('meAvatar').prepend(initials(displayNameOf(me)));
   document.getElementById('meName').textContent = displayNameOf(me);
-  document.querySelector('#me-bar .chev').innerHTML = uiIcon('chevron');
+  document.querySelector('#me-bar .gear').innerHTML = uiIcon('gear');
   document.getElementById('me-bar').onclick = toggleProfilePanel;
   document.getElementById('me-bar').title = 'Профиль и настройки';
   await refreshUsers();
