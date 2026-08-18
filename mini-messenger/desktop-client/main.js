@@ -10,6 +10,19 @@ const { SERVER_URL } = require('./config');
 // стандартный логотип Electron вместо своего.
 const APP_ICON_PATH = path.join(__dirname, 'build', 'icon.ico');
 
+// GPU/аппаратное ускорение Chromium на Windows 7 нестабильно (устаревшие/неполные драйверы DirectX,
+// не рассчитанные на современный Chromium) и регулярно приводит к падениям с "unknown software
+// exception (0x80000003)" — особенно на выключении/перезагрузке ПК, когда драйвер экрана начинает
+// завершаться прямо посреди работы GPU-процесса. Более ранняя попытка (перехват WM_QUERYENDSESSION,
+// см. createRoster ниже) решала только одну из возможных причин этого краша — сам краш у части
+// пользователей остался, так что отключаем GPU-ускорение вовсе, но ТОЛЬКО на Windows 7 (ядро "6.1" —
+// см. таблицу версий https://learn.microsoft.com/windows/win32/sysinfo/operating-system-version):
+// на более новых Windows графика стабильна, отключать её там смысла нет, только потеряем плавность
+// CSS-анимаций. Обязательно ДО app.whenReady()/создания любого окна — иначе не подействует.
+if (process.platform === 'win32' && require('os').release().startsWith('6.1')) {
+  app.disableHardwareAcceleration();
+}
+
 const SETTINGS_PATH = path.join(app.getPath('userData'), 'settings.json');
 
 const DEFAULT_SETTINGS = {
