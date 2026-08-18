@@ -418,6 +418,23 @@ ipcMain.handle('pick-download-folder', async (event) => {
 
 ipcMain.handle('get-server-url', () => SERVER_URL);
 ipcMain.handle('get-unread-state', () => unreadStatePayload());
+// unreadDms/unreadBroadcastCount выше — только в памяти этого процесса, пополняются исключительно
+// живыми WS-событиями (см. markUnread). Если клиент был полностью закрыт (не просто свёрнут в
+// трей), при следующем запуске эти счётчики стартуют с нуля — пропущенные, пока клиент был офлайн,
+// рассылки/сообщения не показывают значок непрочитанного, пока пользователь не откроет диалог
+// вручную. Ростер досчитывает пропущенное по данным сервера при каждом старте (см. seedMissedUnread
+// в roster.html) и один раз "заряжает" счётчики через этот IPC — до того, как подключится WS,
+// поэтому гонки с живыми событиями нет.
+ipcMain.handle('seed-unread', (event, payload) => {
+  if (!payload) return;
+  if (typeof payload.broadcast === 'number' && payload.broadcast > 0) unreadBroadcastCount = payload.broadcast;
+  if (payload.dms) {
+    for (const [uid, count] of Object.entries(payload.dms)) {
+      if (count > 0) unreadDms.set(Number(uid), count);
+    }
+  }
+  broadcastUnreadState();
+});
 // Реальный статус простоя ПРЯМО СЕЙЧАС (не дожидаясь ближайшего 15-секундного тика) — нужен в
 // момент открытия нового WS-подключения, чтобы оно сразу сообщило правильный статус, а не
 // безусловно "в сети", даже если человек на самом деле давно отошёл (см. комментарий у onopen

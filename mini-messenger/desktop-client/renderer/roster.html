@@ -733,6 +733,30 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+// Главный процесс считает непрочитанное только по живым WS-событиям (см. markUnread в main.js) —
+// если клиент был полностью закрыт (не свёрнут в трей), при следующем запуске эти счётчики стартуют
+// с нуля, и пропущенные, пока клиент был офлайн, рассылки/сообщения не показывают значок
+// непрочитанного, пока диалог не откроют вручную. Досчитываем пропущенное по данным сервера при
+// каждом старте: для рассылок — своя же метка "последнее увиденное" из localStorage (её читает и
+// broadcast.html — тот же file://-источник, общий localStorage) плюс сегодняшняя лента; для личных
+// сообщений — read_at на сервере (авторитетнее localStorage: не зависит от того, открывали ли этот
+// диалог раньше вообще). ВАЖНО вызывать ДО connectWs() — тогда никакой гонки с живыми событиями:
+// сначала фиксируем базовый пропущенный "хвост", а всё, что придёт по WS позже, просто добавится
+// поверх через обычный markUnread.
+async function seedMissedUnread() {
+  try {
+    const now = Date.now();
+    const todayStart = new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate()).getTime();
+    const lastSeenId = Number(localStorage.getItem('broadcastLastSeenId')) || 0;
+    const [todayBroadcasts, dms] = await Promise.all([
+      api(`/api/broadcasts?since=${todayStart}&until=${now}`),
+      api('/api/unread-dms'),
+    ]);
+    const broadcast = todayBroadcasts.filter((b) => b.id > lastSeenId).length;
+    if (broadcast || Object.keys(dms).length) await desktop.seedUnread({ broadcast, dms });
+  } catch { /* сеть недоступна на самом старте — не критично, догонит живыми WS-событиями дальше */ }
+}
+
 async function startApp() {
   document.getElementById('auth').style.display = 'none';
   document.getElementById('app').classList.add('active');
@@ -743,6 +767,7 @@ async function startApp() {
   document.getElementById('me-bar').title = 'Профиль и настройки';
   await refreshUsers();
   applyUnreadState(await desktop.getUnreadState()); // на случай, если что-то пришло, пока ростер ещё не слушал unread-state
+  await seedMissedUnread();
   connectWs();
   setInterval(refreshUsers, 20000);
 }

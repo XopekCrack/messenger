@@ -236,6 +236,9 @@ const markDmRead = db.prepare(`
   UPDATE messages SET read_at = ?
   WHERE from_id = ? AND to_id = ? AND read_at IS NULL AND created_at <= ?
 `);
+const unreadDmCounts = db.prepare(`
+  SELECT from_id, COUNT(*) AS c FROM messages WHERE to_id = ? AND read_at IS NULL GROUP BY from_id
+`);
 const dmHistoryDays = db.prepare(`
   SELECT strftime('%Y-%m-%d', datetime(m.created_at/1000, 'unixepoch', ?)) AS day, COUNT(*) AS count
   FROM messages m WHERE (m.from_id = ? AND m.to_id = ?) OR (m.from_id = ? AND m.to_id = ?) GROUP BY day ORDER BY day DESC
@@ -401,6 +404,19 @@ app.get('/api/history/dm/:userId', auth, (req, res) => {
 app.get('/api/history/dm/:userId/days', auth, (req, res) => {
   const other = Number(req.params.userId);
   res.json(dmHistoryDays.all(tzModifier(req), req.user.id, other, other, req.user.id));
+});
+
+// Непрочитанные личные сообщения по каждому собеседнику — read_at авторитетен и хранится на
+// сервере (в отличие от localStorage-меток в клиенте), поэтому не зависит от того, открывал ли
+// клиент этот диалог раньше. Нужно для "досчитывания" значков непрочитанного при старте десктоп-
+// клиента (см. main.js/roster.html) — раньше они жили только в памяти главного процесса и
+// пополнялись исключительно живыми WS-событиями, поэтому пропущенное, пока клиент был закрыт,
+// никак не отражалось на значках до открытия диалога вручную.
+app.get('/api/unread-dms', auth, (req, res) => {
+  const rows = unreadDmCounts.all(req.user.id);
+  const result = {};
+  rows.forEach((r) => { result[r.from_id] = r.c; });
+  res.json(result);
 });
 
 // ---------- Рассылки ----------
