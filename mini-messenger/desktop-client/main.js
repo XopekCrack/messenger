@@ -173,6 +173,22 @@ function createWindow(key, file, payload, size) {
   const qs = new URLSearchParams(payload).toString();
   win.loadFile(path.join(__dirname, 'renderer', file), { search: qs });
   win.once('ready-to-show', () => win.show());
+  // Тот же перехват завершения сеанса, что и у ростера (см. createRoster) — но здесь ОБЯЗАТЕЛЕН
+  // на каждом отдельном окне чата/рассылки, а не только на ростере: Windows шлёт WM_QUERYENDSESSION/
+  // WM_ENDSESSION КАЖДОМУ окну напрямую и независимо, а не только главному, у которого он раньше
+  // был единственным перехватчиком. Именно окно чата (а не ростер) и падало на Win7 при перезагрузке
+  // — судя по всему, особенно легко, если окно только что создано и ещё не до конца загрузилось
+  // (штатная обработка Chromium для такого окна на Win7, похоже, менее надёжна). Не полагаемся на
+  // штатное закрытие — сразу принудительно уничтожаем себя.
+  if (process.platform === 'win32') {
+    const onSessionEnding = () => {
+      isQuitting = true;
+      if (!win.isDestroyed()) win.destroy();
+      app.quit();
+    };
+    win.hookWindowMessage(0x0011, onSessionEnding);
+    win.hookWindowMessage(0x0016, onSessionEnding);
+  }
   // Пользователь мог вернуться к уже открытому, но не сфокусированному окну (Alt+Tab, клик по
   // панели задач) без повторного клика по контакту/значку в ростере — это тоже прочтение.
   win.on('focus', () => clearUnreadForWindow(file, payload));
