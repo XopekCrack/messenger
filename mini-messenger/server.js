@@ -73,6 +73,9 @@ db.exec(`
   if (!cols.includes('file_name')) db.exec('ALTER TABLE messages ADD COLUMN file_name TEXT');
   if (!cols.includes('file_size')) db.exec('ALTER TABLE messages ADD COLUMN file_size INTEGER');
   if (!cols.includes('files_json')) db.exec('ALTER TABLE messages ADD COLUMN files_json TEXT');
+  // Отметка о прочтении — только для личных сообщений (to_id заполнен); для сообщений в общей
+  // комнате остаётся NULL и не используется (галочки прочтения там неоднозначны — читателей много).
+  if (!cols.includes('read_at')) db.exec('ALTER TABLE messages ADD COLUMN read_at INTEGER');
 }
 {
   const cols = db.prepare("PRAGMA table_info(broadcasts)").all().map((c) => c.name);
@@ -129,6 +132,9 @@ function setSettingRaw(key, value) {
 
 // Старые сообщения хранили один файл в отдельных колонках (file_url/file_name/file_size), новые —
 // произвольное количество файлов в files_json. Приводим и то, и другое к единому виду files[].
+// Админ может удалить файл с диска через веб-панель, не трогая саму историю переписки (см.
+// DELETE /api/admin/files/:diskName ниже) — сообщение остаётся, но ссылка в нём мертва. exists
+// помечает такие файлы, чтобы клиент показал "файл удалён", а не сломанную/вечно грузящуюся карточку.
 function normalizeRow(row) {
   if (!row) return row;
   const { file_url, file_name, file_size, files_json, ...rest } = row;
@@ -138,7 +144,12 @@ function normalizeRow(row) {
   } else if (file_url) {
     files = [{ url: file_url, name: file_name, size: file_size }];
   }
+  files = files.map((f) => ({ ...f, exists: fileExistsForUrl(f.url) }));
   return { ...rest, files };
+}
+function fileExistsForUrl(url) {
+  const diskName = String(url || '').split('/').pop();
+  return !!diskName && fs.existsSync(path.join(uploadsDir, diskName));
 }
 
 const insertUser = db.prepare('INSERT INTO users (username, password_hash, display_name, can_broadcast, can_admin, created_at) VALUES (?, ?, ?, ?, ?, ?)');
@@ -202,22 +213,31 @@ const roomHistoryDays = db.prepare(`
 `);
 
 const dmHistoryAll = db.prepare(`
-  SELECT m.id, m.text, m.created_at, m.from_id, m.to_id, m.file_url, m.file_name, m.file_size, m.files_json, u.display_name AS from_user
+  SELECT m.id, m.text, m.created_at, m.from_id, m.to_id, m.read_at, m.file_url, m.file_name, m.file_size, m.files_json, u.display_name AS from_user
   FROM messages m JOIN users u ON u.id = m.from_id
   WHERE (m.from_id = ? AND m.to_id = ?) OR (m.from_id = ? AND m.to_id = ?)
   ORDER BY m.id DESC LIMIT 200
 `);
 const dmHistoryRange = db.prepare(`
-  SELECT m.id, m.text, m.created_at, m.from_id, m.to_id, m.file_url, m.file_name, m.file_size, m.files_json, u.display_name AS from_user
+  SELECT m.id, m.text, m.created_at, m.from_id, m.to_id, m.read_at, m.file_url, m.file_name, m.file_size, m.files_json, u.display_name AS from_user
   FROM messages m JOIN users u ON u.id = m.from_id
   WHERE ((m.from_id = ? AND m.to_id = ?) OR (m.from_id = ? AND m.to_id = ?)) AND m.created_at >= ? AND m.created_at < ?
   ORDER BY m.id ASC
 `);
 const dmHistorySearch = db.prepare(`
-  SELECT m.id, m.text, m.created_at, m.from_id, m.to_id, m.file_url, m.file_name, m.file_size, m.files_json, u.display_name AS from_user
+  SELECT m.id, m.text, m.created_at, m.from_id, m.to_id, m.read_at, m.file_url, m.file_name, m.file_size, m.files_json, u.display_name AS from_user
   FROM messages m JOIN users u ON u.id = m.from_id
   WHERE ((m.from_id = ? AND m.to_id = ?) OR (m.from_id = ? AND m.to_id = ?)) AND lower_ru(m.text) LIKE '%' || lower_ru(?) || '%'
   ORDER BY m.id DESC LIMIT 200
+`);
+// Отмечаем прочитанными сообщения ОТ peer КО мне (to_id = я), полученные не позже upTo — тем же
+// сигналом, что и разделитель "Новые сообщения" в чате (клик/скролл), а не просто открытием окна.
+const markDmRead = db.prepare(`
+  UPDATE messages SET read_at = ?
+  WHERE from_id = ? AND to_id = ? AND read_at IS NULL AND created_at <= ?
+`);
+const unreadDmCounts = db.prepare(`
+  SELECT from_id, COUNT(*) AS c FROM messages WHERE to_id = ? AND read_at IS NULL GROUP BY from_id
 `);
 const dmHistoryDays = db.prepare(`
   SELECT strftime('%Y-%m-%d', datetime(m.created_at/1000, 'unixepoch', ?)) AS day, COUNT(*) AS count
@@ -230,10 +250,16 @@ const recentBroadcasts = db.prepare(`
   FROM broadcasts b JOIN users u ON u.id = b.from_id
   ORDER BY b.id DESC LIMIT 50
 `);
+// LIMIT 300 + вложенный DESC/ASC: без ограничения тяжёлый день (например, стресс-тест рассылок)
+// отдавал бы клиенту весь день целиком — сотни DOM-узлов с карточками файлов в ленте окна рассылок
+// ощутимо замедляют рендер на слабых машинах. Берём последние 300 (внутренний DESC), но отдаём в
+// привычном хронологическом порядке (внешний ASC), чтобы клиент, как и раньше, не пересортировывал.
 const broadcastsRange = db.prepare(`
-  SELECT b.id, b.text, b.created_at, b.files_json, u.display_name AS from_user
-  FROM broadcasts b JOIN users u ON u.id = b.from_id
-  WHERE b.created_at >= ? AND b.created_at < ? ORDER BY b.id ASC
+  SELECT * FROM (
+    SELECT b.id, b.text, b.created_at, b.files_json, u.display_name AS from_user
+    FROM broadcasts b JOIN users u ON u.id = b.from_id
+    WHERE b.created_at >= ? AND b.created_at < ? ORDER BY b.id DESC LIMIT 300
+  ) ORDER BY id ASC
 `);
 const broadcastsSearch = db.prepare(`
   SELECT b.id, b.text, b.created_at, b.files_json, u.display_name AS from_user
@@ -317,6 +343,7 @@ app.post('/api/register', (req, res) => {
     // вручную администратор (сотруднику лично или всему его отделу), либо стартовый администратор
     // из bootstrap-admin.js создаётся отдельно, не через эту форму.
     const info = insertUser.run(username, hash, username, 0, 0, Date.now());
+    invalidateUserIdsCache();
     const token = jwt.sign({ id: info.lastInsertRowid }, SECRET, { expiresIn: '30d' });
     res.json({ token, user: getUserById.get(info.lastInsertRowid) });
   } catch {
@@ -379,6 +406,19 @@ app.get('/api/history/dm/:userId/days', auth, (req, res) => {
   res.json(dmHistoryDays.all(tzModifier(req), req.user.id, other, other, req.user.id));
 });
 
+// Непрочитанные личные сообщения по каждому собеседнику — read_at авторитетен и хранится на
+// сервере (в отличие от localStorage-меток в клиенте), поэтому не зависит от того, открывал ли
+// клиент этот диалог раньше. Нужно для "досчитывания" значков непрочитанного при старте десктоп-
+// клиента (см. main.js/roster.html) — раньше они жили только в памяти главного процесса и
+// пополнялись исключительно живыми WS-событиями, поэтому пропущенное, пока клиент был закрыт,
+// никак не отражалось на значках до открытия диалога вручную.
+app.get('/api/unread-dms', auth, (req, res) => {
+  const rows = unreadDmCounts.all(req.user.id);
+  const result = {};
+  rows.forEach((r) => { result[r.from_id] = r.c; });
+  res.json(result);
+});
+
 // ---------- Рассылки ----------
 app.get('/api/broadcasts', auth, (req, res) => {
   const { since, until, q } = req.query;
@@ -413,6 +453,7 @@ app.post('/api/admin/users', auth, requireCapability('can_admin'), (req, res) =>
   try {
     const hash = bcrypt.hashSync(password, 10);
     const info = insertUser.run(username, hash, username, can_broadcast ? 1 : 0, can_admin ? 1 : 0, Date.now());
+    invalidateUserIdsCache();
     if (department_id) updateUserDept.run(department_id, info.lastInsertRowid);
     broadcastUsersChanged();
     res.json({ ok: true, id: info.lastInsertRowid });
@@ -451,6 +492,7 @@ app.delete('/api/admin/users/:id', auth, requireCapability('can_admin'), (req, r
   const id = Number(req.params.id);
   if (id === req.user.id) return res.status(400).json({ error: 'Нельзя удалить свою же учётку' });
   deleteUserStmt.run(id);
+  invalidateUserIdsCache();
   broadcastUsersChanged();
   res.json({ ok: true });
 });
@@ -592,11 +634,26 @@ const wss = new WebSocketServer({ server });
 const online = new Map();   // userId -> Set(ws)              — для маршрутизации сообщений
 const connMeta = new Map(); // ws -> { userId, hostname, state } — для presence (может быть несколько ПК на юзера)
 
+// Кэш id всех пользователей — чтобы presenceSnapshot() не делал SELECT по таблице users на каждый
+// вызов (а вызывается он на каждое presence-событие: подключение/отключение/каждый статус-тик от
+// клиентов, т.е. часто). Сбрасывается при создании/удалении пользователя.
+let allUserIdsCache = null;
+function getAllUserIds() {
+  if (!allUserIdsCache) allUserIdsCache = db.prepare('SELECT id FROM users').all().map((r) => r.id);
+  return allUserIdsCache;
+}
+function invalidateUserIdsCache() { allUserIdsCache = null; }
+
+// userId -> { state, since } — момент последней смены АГРЕГИРОВАННОГО (по всем подключениям
+// пользователя) статуса. Живёт в памяти процесса (не в БД), поэтому переживает переподключения
+// конкретных WS, но не перезапуск сервера — после рестарта отсчёт для всех начнётся заново.
+const statusSince = new Map();
+
 function presenceSnapshot() {
-  const byUser = new Map();
+  const onlineByUser = new Map(); // не путать с внешней online (userId -> Set(ws) для маршрутизации)
   for (const meta of connMeta.values()) {
-    if (!byUser.has(meta.userId)) byUser.set(meta.userId, { state: 'offline', hosts: new Set(), idleSince: null });
-    const entry = byUser.get(meta.userId);
+    if (!onlineByUser.has(meta.userId)) onlineByUser.set(meta.userId, { state: 'offline', hosts: new Set(), idleSince: null });
+    const entry = onlineByUser.get(meta.userId);
     entry.hosts.add(meta.hostname || 'неизвестный ПК');
     if (meta.state === 'active') { entry.state = 'active'; entry.idleSince = null; }
     else if (meta.state === 'idle' && entry.state !== 'active') {
@@ -606,8 +663,21 @@ function presenceSnapshot() {
       if (meta.idleSince && (!entry.idleSince || meta.idleSince < entry.idleSince)) entry.idleSince = meta.idleSince;
     }
   }
+
+  const now = Date.now();
   const result = {};
-  for (const [uid, v] of byUser) result[uid] = { state: v.state, hosts: [...v.hosts], idleSince: v.idleSince };
+  for (const uid of getAllUserIds()) {
+    const entry = onlineByUser.get(uid);
+    const state = entry ? entry.state : 'offline';
+    const prev = statusSince.get(uid);
+    if (!prev || prev.state !== state) statusSince.set(uid, { state, since: now });
+    result[uid] = {
+      state,
+      hosts: entry ? [...entry.hosts] : [],
+      idleSince: entry ? entry.idleSince : null,
+      since: statusSince.get(uid).since, // с какого момента текущий статус действует — для тултипа в клиенте
+    };
+  }
   return result;
 }
 
@@ -651,6 +721,20 @@ wss.on('connection', (ws, req) => {
         meta.lastSeen = Date.now();
       }
       broadcastPresence();
+      return;
+    }
+
+    if (msg.type === 'read') {
+      const peer = Number(msg.peer);
+      const upTo = Number(msg.upTo);
+      if (!peer || !upTo) return;
+      const info = markDmRead.run(Date.now(), peer, user.id, upTo);
+      if (info.changes > 0) {
+        // Сообщаем автору (peer), что я прочитал его сообщения по upTo включительно — если он сейчас
+        // онлайн, его открытое окно переписки со мной сразу перекрасит галочки в синий.
+        const out = JSON.stringify({ type: 'read-receipt', peer: user.id, upTo });
+        (online.get(peer) || new Set()).forEach((c) => c.send(out));
+      }
       return;
     }
 

@@ -23,4 +23,7 @@ contextBridge.exposeInMainWorld('desktop', {
   onDownloadProgress: (cb) => ipcRenderer.on('download-progress', (event, payload) => cb(payload)),
   onToast: (cb) => ipcRenderer.on('toast', (event, payload) => cb(payload)),
   pickDownloadFolder: () => ipcRenderer.invoke('pick-download-folder'),
+  getUnreadState: () => ipcRenderer.invoke('get-unread-state'),
+  seedUnread: (payload) => ipcRenderer.invoke('seed-unread', payload),
+  onUnreadState: (cb) => ipcRenderer.on('unread-state', (event, state) => cb(state)),
 });
