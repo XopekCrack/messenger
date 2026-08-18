@@ -371,7 +371,7 @@ function connectWs() {
     // Не сбрасываем таймер на каждой неудачной попытке (реконнект — раз в 2с) — иначе постоянные
     // провалы просто бесконечно откладывали бы показ диалога. Ставим один раз на первый обрыв и
     // ждём (5с), пока какая-нибудь попытка не удастся; удачное onopen выше сам его отменяет.
-    if (!wsLostTimer) wsLostTimer = setTimeout(() => showConnectionLostModal(connectWs), 5000);
+    if (!wsLostTimer) wsLostTimer = setTimeout(() => { wsLostTimer = null; showConnectionLostModal(connectWs); }, 5000);
     setTimeout(connectWs, 2000);
   };
 }
