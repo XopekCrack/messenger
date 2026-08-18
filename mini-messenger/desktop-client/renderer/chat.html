@@ -427,6 +427,15 @@ function applyReadReceipt(upTo) {
 const LAST_SEEN_KEY = `chatLastSeenTs:${type}:${id}`;
 function getLastSeenTs() { return Number(localStorage.getItem(LAST_SEEN_KEY)) || 0; }
 function setLastSeenTs(ts) { if (ts) localStorage.setItem(LAST_SEEN_KEY, String(ts)); }
+// Если этот диалог никто ещё не открывал (метки в localStorage вообще нет) — раньше это означало,
+// что разделитель (а вместе с ним и отметка "прочитано"/read-receipt) НИКОГДА не появлялся для него:
+// условие в addMessage ниже намеренно требует непустую метку (см. комментарий там), а сама метка
+// выставляется только внутри clearUnreadDivider(), которая срабатывает только если разделитель уже
+// показан — замкнутый круг, из которого нет выхода. Разрываем его: при самом первом открытии сразу
+// проставляем метку на "сейчас" (всё, что уже есть в истории на этот момент, по умолчанию считается
+// прочитанным — так и было задумано), а всё, что придёт ПОСЛЕ этого момента, уже корректно попадёт
+// под условие ниже и покажет разделитель (а значит, дойдёт и до read-receipt отправителю).
+if (!getLastSeenTs()) setLastSeenTs(Date.now());
 let maxKnownTs = getLastSeenTs(); // растёт по мере отрисовки/получения входящих в этой сессии
 let hasUnreadDivider = false;
 let unreadClearTimer = null;
