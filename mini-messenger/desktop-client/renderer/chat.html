@@ -674,6 +674,14 @@ function monthLabel(key) { // key = 'YYYY-MM'
 // тогда по-настоящему убираются из раскладки (display:none), иначе остаются невидимыми, но
 // занимающими место (тот же приём, что у списка контактов в ростере при открытой панели профиля).
 function hideChatBodySmoothly() {
+  const box = document.getElementById('messages');
+  // display:none обнуляет scrollHeight/scrollTop элемента (и то и другое читается как 0, пока он
+  // скрыт) — если что-то попытается прокрутить его в этот момент (например, addMessage при живом
+  // сообщении, пришедшем пока открыта История) или браузер просто не идеально восстановит скролл
+  // после возврата в раскладку, список чуть сдвигается от того места, где реально был. Поэтому сами
+  // запоминаем позицию явно, а не полагаемся на то, что она переживёт display:none сама по себе.
+  box.dataset.wasAtBottom = (box.scrollHeight - box.scrollTop - box.clientHeight < 4) ? '1' : '';
+  box.dataset.savedScrollTop = box.scrollTop;
   ['messages', 'composer'].forEach((id) => {
     const el = document.getElementById(id);
     if (el.classList.contains('chat-hidden')) return;
@@ -688,6 +696,13 @@ function showChatBodySmoothly() {
     void el.offsetHeight; // ...форсируем reflow, чтобы transition не схлопнулся...
     el.classList.remove('chat-hidden'); // ...и только теперь плавно проявляем
   });
+  const box = document.getElementById('messages');
+  // Если до открытия Истории список был прокручен в самый низ — возвращаем именно в (новый) низ,
+  // а не на старую абсолютную позицию: пока История была открыта, могли прийти новые сообщения
+  // (см. addMessage), и scrollHeight мог вырасти. Если же пользователь читал более старые сообщения
+  // (не внизу) — просто восстанавливаем точную позицию, где он и был.
+  programmaticScroll = true;
+  box.scrollTop = box.dataset.wasAtBottom ? box.scrollHeight : Number(box.dataset.savedScrollTop || 0);
 }
 
 async function openHistoryPanel() {
