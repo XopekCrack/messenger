@@ -12,6 +12,32 @@
   .dot.active { background: var(--online); box-shadow: 0 0 6px 0 var(--online); }
   .dot.idle { background: var(--afk); box-shadow: 0 0 6px 0 var(--afk); }
   .wintitlebar .who .n { font-weight: 600; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* Имя собеседника кликабельно только в личной переписке (см. togglePresencePanel) — курсор и
+     no-drag ставим через JS вместе с обработчиком, чтобы в общем чате имя оставалось обычным
+     текстом без намёка на кликабельность. */
+  .wintitlebar .who .n.clickable { cursor: pointer; -webkit-app-region: no-drag; }
+  .wintitlebar .who .n.clickable:hover { text-decoration: underline; text-decoration-color: var(--muted); text-underline-offset: 2px; }
+
+  /* Всплывающая карточка присутствия — та же визуальная схема, что у панели эмодзи (position:
+     absolute поверх остального, плавные opacity/transform). Показывает то же, что раньше было
+     видно только в title тултипа (наведение на точку статуса), плюс имена ПК, если собеседник
+     сидит с нескольких устройств одновременно под одним аккаунтом. */
+  #presencePanel {
+    position: absolute; top: 44px; left: 12px; min-width: 190px; max-width: 260px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow);
+    padding: 11px 13px; z-index: 40;
+    opacity: 0; transform: translateY(6px) scale(.98); pointer-events: none;
+    transition: opacity .12s ease, transform .12s ease;
+  }
+  #presencePanel.open { opacity: 1; transform: translateY(0) scale(1); pointer-events: auto; }
+  #presencePanel .pp-state { font-weight: 600; font-size: 12.5px; display: flex; align-items: center; gap: 7px; }
+  #presencePanel .pp-state .dot2 { width: 8px; height: 8px; border-radius: 50%; background: var(--offline); flex-shrink: 0; }
+  #presencePanel .pp-state .dot2.active { background: var(--online); }
+  #presencePanel .pp-state .dot2.idle { background: var(--afk); }
+  #presencePanel .pp-since { font-size: 11px; color: var(--muted); margin-top: 3px; }
+  #presencePanel .pp-hosts-title { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .3px; font-weight: 700; margin-top: 9px; margin-bottom: 4px; }
+  #presencePanel .pp-host { display: flex; align-items: center; gap: 6px; font-size: 12px; padding: 2px 0; }
+  #presencePanel .pp-host svg { color: var(--muted); flex-shrink: 0; }
 
   #messages { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 8px; }
   /* Раньше здесь стоял justify-content:flex-end на #messages целиком — тот же визуальный эффект
@@ -196,6 +222,7 @@
     <button class="icon-btn close" id="wcClose"></button>
   </div>
 </div>
+<div id="presencePanel"></div>
 
 <div id="messages"></div>
 <div id="composer">
@@ -255,6 +282,44 @@ function statusTitle(state, idleSince, since) {
   return sinceLine ? `${statusLabel(state, idleSince)}\n${sinceLine}` : statusLabel(state, idleSince);
 }
 document.getElementById('statusDot').title = statusTitle('offline');
+
+// Всплывающая карточка по клику на имя — то же самое, что тултип у точки статуса (см. statusTitle
+// выше), плюс имена ПК: если у собеседника несколько одновременных подключений под одним аккаунтом
+// (сидит с двух компов), сервер уже присылает их все в presence.hosts (см. presenceSnapshot в
+// server.js) — просто не показывали эту часть нигде в интерфейсе.
+let lastPresence = null; // последний presence этого собеседника — чтобы перерисовать карточку, если она открыта, когда придёт обновление
+const presencePanel = document.getElementById('presencePanel');
+function presencePopupHtml(p) {
+  const state = p ? p.state : 'offline';
+  let html = `<div class="pp-state"><span class="dot2 ${state}"></span>${escapeHtml(statusLabel(state, p?.idleSince))}</div>`;
+  const sinceLine = formatStatusSince(state, p?.since);
+  if (sinceLine) html += `<div class="pp-since">${escapeHtml(sinceLine)}</div>`;
+  const hosts = p?.hosts || [];
+  if (hosts.length) {
+    html += `<div class="pp-hosts-title">${hosts.length > 1 ? 'Подключён с устройств' : 'Подключён с устройства'}</div>`;
+    html += hosts.map((h) => `<div class="pp-host">${uiIcon('monitor')}${escapeHtml(h)}</div>`).join('');
+  }
+  return html;
+}
+function renderPresencePanel() {
+  presencePanel.innerHTML = presencePopupHtml(lastPresence);
+}
+function closePresencePanel() {
+  presencePanel.classList.remove('open');
+}
+function togglePresencePanel() {
+  const opening = !presencePanel.classList.contains('open');
+  if (opening) renderPresencePanel();
+  presencePanel.classList.toggle('open', opening);
+}
+if (type === 'dm') {
+  const labelEl = document.getElementById('label');
+  labelEl.classList.add('clickable'); // .clickable также снимает -webkit-app-region:drag с имени — иначе клик внутри drag-области шапки не всегда доходит
+  labelEl.addEventListener('click', togglePresencePanel);
+  document.addEventListener('click', (e) => {
+    if (presencePanel.classList.contains('open') && !e.target.closest('#presencePanel') && !e.target.closest('#label')) closePresencePanel();
+  });
+}
 
 // Собеседник, подключённый ТОЛЬКО через веб-панель администратора (без единого реального хоста),
 // не может получить ни сообщение, ни файл — у веб-панели нет интерфейса чата. Композер и вложения
@@ -446,6 +511,8 @@ function connectWs() {
       document.getElementById('statusDot').className = 'dot ' + state;
       document.getElementById('statusDot').title = statusTitle(state, p?.idleSince, p?.since);
       updateComposerReachability(p?.hosts);
+      lastPresence = p;
+      if (presencePanel.classList.contains('open')) renderPresencePanel(); // если карточка уже открыта — обновляем вживую
     }
     // Собеседник (в этом окне — data.peer) прочитал мои сообщения по data.upTo включительно —
     // перекрашиваем галочки уже отрисованных своих сообщений из серых в синие, без перезагрузки.

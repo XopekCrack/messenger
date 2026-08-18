@@ -54,6 +54,7 @@
     restore: '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2.5" y="5.5" width="8" height="8" rx="1"/><path d="M5.5 5.5V3.5a1 1 0 011-1h7a1 1 0 011 1v7a1 1 0 01-1 1h-2"/></svg>',
     folder: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6.5a1.5 1.5 0 011.5-1.5h4l2 2.5h8.5A1.5 1.5 0 0120.5 9v9a1.5 1.5 0 01-1.5 1.5H4.5A1.5 1.5 0 013 18V6.5z"/></svg>',
     emoji: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9.3"/><path d="M8.3 10.2h.01M15.7 10.2h.01"/><path d="M8 14.3c1 1.4 2.4 2.1 4 2.1s3-.7 4-2.1"/></svg>',
+    monitor: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="12" rx="1.5"/><path d="M8.5 20h7M12 16.5V20"/></svg>',
   };
   window.uiIcon = (name) => ICONS[name] || '';
 
