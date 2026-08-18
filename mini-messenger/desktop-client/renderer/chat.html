@@ -51,6 +51,9 @@
   .msg.own { background: var(--own); align-self: flex-end; }
   .msg .who { font-size: 10.5px; color: var(--accent); font-weight: 600; margin-bottom: 2px; }
   .msg.own .who { display: none; }
+  /* Настройка "Скрывать имя в сообщениях" (см. applyHideNames ниже) — только для личных чатов:
+     имя и так видно в шапке окна, а в общей комнате оно как раз нужно, чтобы различать реплики. */
+  body.hide-names .msg .who { display: none; }
   .msg .txt { white-space: pre-wrap; word-break: break-word; line-height: 1.4; }
   /* Подсветка совпадений при поиске по истории — см. highlightHtml/runSearch. */
   mark.hl { background: var(--accent); color: #fff; border-radius: 3px; padding: 0 1px; }
@@ -59,7 +62,10 @@
      собеседник не увидел сообщение, синяя — после того, как он его прочитал (тот же сигнал, что
      скрывает разделитель "Новые сообщения" у него — клик или прокрутка, см. clearUnreadDivider). */
   .read-tick { display: inline-flex; vertical-align: -1px; margin-left: 3px; color: var(--muted); }
-  .read-tick svg { display: block; width: 10px; height: 10px; }
+  /* width не задаём — у одинарной и двойной галочки разное соотношение сторон viewBox (24x24
+     против 28x24), фиксированная ширина сплющила бы вторую. Высота одна для обеих — auto-ширина
+     сохраняет пропорции сама. */
+  .read-tick svg { display: block; height: 10px; width: auto; }
   .read-tick.read { color: var(--accent-2); }
   .msg .files-block { display: flex; flex-direction: column; gap: 6px; }
   .msg .file { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--hover); border-radius: 8px; text-decoration: none; color: var(--text); min-width: 0; }
@@ -263,6 +269,15 @@ const me = JSON.parse(localStorage.getItem('me') || 'null');
 document.getElementById('label').textContent = label;
 if (type !== 'dm') document.getElementById('statusDot').style.display = 'none';
 
+// Настройка "Скрывать имя в сообщениях" — только в личных чатах (в общей комнате имя нужно, чтобы
+// различать реплики). Применяется сразу во всех открытых окнах при переключении слайдера (см.
+// onSettingsChanged), не только при следующем открытии чата.
+function applyHideNames(settings) {
+  document.body.classList.toggle('hide-names', type === 'dm' && !!settings.hideNameInMessages);
+}
+desktop.getSettings().then(applyHideNames);
+desktop.onSettingsChanged(applyHideNames);
+
 // Текст статуса собеседника: для "отошёл" — сколько времени он уже отошёл, а не просто "AFK"
 function formatIdleDuration(idleSince) {
   if (!idleSince) return '';
@@ -379,7 +394,9 @@ function fmtSize(bytes) {
 // сервером (см. markDmRead в server.js), иначе серая.
 function readTickHtml(m) {
   if (type !== 'dm' || m.from_id !== me.id) return '';
-  return `<span class="read-tick${m.read_at ? ' read' : ''}" title="${m.read_at ? 'Прочитано' : 'Отправлено'}">${uiIcon('check')}</span>`;
+  // Как в Telegram — одна галочка "отправлено", две галочки "прочитано" (а не одна и та же
+  // галочка, просто перекрашенная).
+  return `<span class="read-tick${m.read_at ? ' read' : ''}" title="${m.read_at ? 'Прочитано' : 'Отправлено'}">${uiIcon(m.read_at ? 'checkDouble' : 'check')}</span>`;
 }
 
 function bubbleHtml(m, { withDate, query } = {}) {
@@ -415,7 +432,11 @@ function bubbleHtml(m, { withDate, query } = {}) {
 function applyReadReceipt(upTo) {
   document.querySelectorAll('#messages .msg.own[data-ts]').forEach((el) => {
     if (Number(el.dataset.ts) > upTo) return;
-    el.querySelector('.read-tick')?.classList.add('read');
+    const tick = el.querySelector('.read-tick');
+    if (!tick || tick.classList.contains('read')) return;
+    tick.classList.add('read');
+    tick.title = 'Прочитано';
+    tick.innerHTML = uiIcon('checkDouble'); // была одна галочка ("отправлено") — становится две
   });
 }
 

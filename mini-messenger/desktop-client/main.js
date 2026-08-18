@@ -29,6 +29,7 @@ const DEFAULT_SETTINGS = {
   openChatOnMessage: false, // открывать окно чата при новом сообщении (вместо/вместе с уведомлением)
   rememberWindowSize: false, // запоминать размер окон между запусками
   alwaysOnTop: false,        // держать окна поверх остальных
+  hideNameInMessages: true,  // не повторять имя собеседника в каждом сообщении личного чата (по умолчанию включено)
   theme: 'dark',             // 'dark' | 'light'
   downloadPath: null,        // папка для сохранения файлов по умолчанию (null = каждый раз спрашивать)
   idleThresholdMinutes: 30,  // сколько минут без активности мыши/клавиатуры -> статус "Отошёл"

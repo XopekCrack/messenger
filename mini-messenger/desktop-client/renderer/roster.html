@@ -231,6 +231,10 @@
         <div class="opt-text"><div class="t">Поверх остальных окон</div><div class="d">Окна мессенджера всегда будут отображаться над другими приложениями.</div></div>
         <span class="pp-switch"><input type="checkbox" id="ppAlwaysOnTop"><span class="pp-switch-track"></span></span>
       </label>
+      <label class="option">
+        <div class="opt-text"><div class="t">Скрывать имя в сообщениях</div><div class="d">Не повторять имя собеседника в каждом сообщении личного чата — только в шапке окна.</div></div>
+        <span class="pp-switch"><input type="checkbox" id="ppHideNames"><span class="pp-switch-track"></span></span>
+      </label>
 
       <div class="theme-row" style="flex-direction:column; align-items:stretch; gap:8px;">
         <div class="info">
@@ -411,6 +415,7 @@ const PP_CHECKBOX_IDS = [
   ['ppOpenChatOnMessage', 'openChatOnMessage'],
   ['ppRememberWindowSize', 'rememberWindowSize'],
   ['ppAlwaysOnTop', 'alwaysOnTop'],
+  ['ppHideNames', 'hideNameInMessages'],
 ];
 
 function paintProfileTheme(theme) {
