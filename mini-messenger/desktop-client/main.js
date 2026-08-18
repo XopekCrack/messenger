@@ -173,6 +173,22 @@ function createWindow(key, file, payload, size) {
   const qs = new URLSearchParams(payload).toString();
   win.loadFile(path.join(__dirname, 'renderer', file), { search: qs });
   win.once('ready-to-show', () => win.show());
+  // Тот же перехват завершения сеанса, что и у ростера (см. createRoster) — но здесь ОБЯЗАТЕЛЕН
+  // на каждом отдельном окне чата/рассылки, а не только на ростере: Windows шлёт WM_QUERYENDSESSION/
+  // WM_ENDSESSION КАЖДОМУ окну напрямую и независимо, а не только главному, у которого он раньше
+  // был единственным перехватчиком. Именно окно чата (а не ростер) и падало на Win7 при перезагрузке
+  // — судя по всему, особенно легко, если окно только что создано и ещё не до конца загрузилось
+  // (штатная обработка Chromium для такого окна на Win7, похоже, менее надёжна). Не полагаемся на
+  // штатное закрытие — сразу принудительно уничтожаем себя.
+  if (process.platform === 'win32') {
+    const onSessionEnding = () => {
+      isQuitting = true;
+      if (!win.isDestroyed()) win.destroy();
+      app.quit();
+    };
+    win.hookWindowMessage(0x0011, onSessionEnding);
+    win.hookWindowMessage(0x0016, onSessionEnding);
+  }
   // Пользователь мог вернуться к уже открытому, но не сфокусированному окну (Alt+Tab, клик по
   // панели задач) без повторного клика по контакту/значку в ростере — это тоже прочтение.
   win.on('focus', () => clearUnreadForWindow(file, payload));
@@ -217,14 +233,27 @@ function createRoster() {
   // закрытие сбивает штатную последовательность завершения Chromium и на Windows 7 роняло процесс
   // с "unknown software exception (0x80000003)" прямо в момент выключения/перезагрузки ПК (см.
   // https://github.com/electron/electron/issues/34311 — тот же паттерн: close-хендлер, который не
-  // даёt окну закрыться, ломает штатную обработку WM_QUERYENDSESSION). WM_QUERYENDSESSION (0x0011)
-  // приходит раньше 'close' — перехватываем его напрямую и заранее взводим isQuitting, чтобы
-  // обработчик close ниже в этом случае пропустил окно к настоящему закрытию, а не спрятал его.
+  // даёт окну закрыться, ломает штатную обработку WM_QUERYENDSESSION).
+  //
+  // Выключение и перезагрузка ведут себя по-разному: после первой версии фикса (только 0x0011 +
+  // app.quit()) краш на простом выключении пропал, а на перезагрузке остался — похоже, у Windows
+  // при перезагрузке меньше запаса по времени до принудительного завершения процесса, чем при
+  // простом выключении (ей ведь ещё нужно успеть погасить и заново поднять видеодрайвер под POST),
+  // и обычный асинхронный каскад app.quit() (window-all-closed → before-quit → закрытие каждого
+  // окна по очереди) может не укладываться в это окно. Теперь: слушаем ОБА сигнала — WM_QUERYEND-
+  // SESSION (0x0011, приходит первым) И WM_ENDSESSION (0x0016, на случай, если первый придёт
+  // слишком поздно/не будет обработан вовремя) — и сразу же, синхронно, а не через обычную
+  // последовательность закрытия, уничтожаем все дочерние окна (win.destroy(), не close() — не ждёт
+  // события 'close' и связанной с ним логики) перед тем, как звать app.quit().
   if (process.platform === 'win32') {
-    rosterWin.hookWindowMessage(0x0011, () => {
+    const onSessionEnding = () => {
+      if (isQuitting) return; // уже начали закрываться (напр. от второго сигнала) — не дублируем
       isQuitting = true;
+      for (const win of namedWins.values()) { if (!win.isDestroyed()) win.destroy(); }
       app.quit();
-    });
+    };
+    rosterWin.hookWindowMessage(0x0011, onSessionEnding);
+    rosterWin.hookWindowMessage(0x0016, onSessionEnding);
   }
 
   // Не закрываем насовсем — сворачиваем в трей, чтобы приложение продолжало получать сообщения
