@@ -519,6 +519,7 @@ async function loadHistory() {
 }
 
 let ws, wsReadyQueue = [];
+let wsLostTimer = null; // см. showConnectionLostModal в ui-kit.js
 function connectWs() {
   const wsUrl = serverUrl.replace(/^http/, 'ws');
   ws = new WebSocket(`${wsUrl}?token=${token}&host=${encodeURIComponent(desktop.hostname)}`);
@@ -528,6 +529,9 @@ function connectWs() {
   // подключения берём реальный, а не всегда "в сети" — иначе на пару секунд перебивало настоящий
   // AFK, пока не придёт ближайший 15-секундный тик с исправлением.
   ws.onopen = async () => {
+    clearTimeout(wsLostTimer);
+    wsLostTimer = null;
+    hideConnectionLostModal();
     const { state } = await desktop.getIdleState();
     ws.send(JSON.stringify({ type: 'status', state }));
     wsReadyQueue.forEach(fn => fn());
@@ -551,7 +555,10 @@ function connectWs() {
     const belongs = type === 'room' ? data.room === id : (data.from_id === id || data.to_id === id);
     if (belongs) addMessage(data);
   };
-  ws.onclose = () => setTimeout(connectWs, 2000);
+  ws.onclose = () => {
+    if (!wsLostTimer) wsLostTimer = setTimeout(() => showConnectionLostModal(connectWs), 5000);
+    setTimeout(connectWs, 2000);
+  };
 }
 
 desktop.onIdleState(({ state }) => {

@@ -725,10 +725,14 @@ document.getElementById('feed').addEventListener('scroll', () => {
 });
 
 let ws;
+let wsLostTimer = null; // см. showConnectionLostModal в ui-kit.js
 function connectWs() {
   const wsUrl = serverUrl.replace(/^http/, 'ws');
   ws = new WebSocket(`${wsUrl}?token=${token}&host=${encodeURIComponent(desktop.hostname)}`);
   ws.onopen = async () => {
+    clearTimeout(wsLostTimer);
+    wsLostTimer = null;
+    hideConnectionLostModal();
     const { state } = await desktop.getIdleState();
     ws.send(JSON.stringify({ type: 'status', state }));
   };
@@ -736,7 +740,10 @@ function connectWs() {
     const data = JSON.parse(e.data);
     if (data.type === 'broadcast') addLiveBroadcast(data);
   };
-  ws.onclose = () => setTimeout(connectWs, 2000);
+  ws.onclose = () => {
+    if (!wsLostTimer) wsLostTimer = setTimeout(() => showConnectionLostModal(connectWs), 5000);
+    setTimeout(connectWs, 2000);
+  };
 }
 
 loadFeed();

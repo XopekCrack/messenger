@@ -329,6 +329,7 @@ async function api(path, opts) {
   return res.json();
 }
 
+let wsLostTimer = null; // см. showConnectionLostModal в ui-kit.js
 function connectWs() {
   const wsUrl = serverUrl.replace(/^http/, 'ws');
   ws = new WebSocket(`${wsUrl}?token=${token}&host=${encodeURIComponent(desktop.hostname)}`);
@@ -336,6 +337,9 @@ function connectWs() {
   // (например, при открытии окна чата) на пару секунд перебивало настоящий AFK-статус человека,
   // пока не придёт очередной 15-секундный тик с исправлением.
   ws.onopen = async () => {
+    clearTimeout(wsLostTimer);
+    wsLostTimer = null;
+    hideConnectionLostModal();
     const { state } = await desktop.getIdleState();
     ws.send(JSON.stringify({ type: 'status', state }));
   };
@@ -363,7 +367,13 @@ function connectWs() {
     // Админ поменял чью-то роль/отдел/список пользователей — подхватываем сразу, без перезахода
     if (data.type === 'users-changed') { refreshUsers(); refreshMe(); }
   };
-  ws.onclose = () => setTimeout(connectWs, 2000);
+  ws.onclose = () => {
+    // Не сбрасываем таймер на каждой неудачной попытке (реконнект — раз в 2с) — иначе постоянные
+    // провалы просто бесконечно откладывали бы показ диалога. Ставим один раз на первый обрыв и
+    // ждём (5с), пока какая-нибудь попытка не удастся; удачное onopen выше сам его отменяет.
+    if (!wsLostTimer) wsLostTimer = setTimeout(() => showConnectionLostModal(connectWs), 5000);
+    setTimeout(connectWs, 2000);
+  };
 }
 
 // Текст статуса: для "отошёл" — сколько времени человек уже отошёл, а не просто "AFK"

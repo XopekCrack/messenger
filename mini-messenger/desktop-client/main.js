@@ -403,6 +403,9 @@ ipcMain.on('window-action', (event, action) => {
   if (action === 'minimize') win.minimize();
   if (action === 'maximize') { win.isMaximized() ? win.unmaximize() : win.maximize(); }
   if (action === 'close') win.close();
+  // Настоящий выход из приложения (не сворачивание в трей) — например, кнопка "Выйти" в диалоге
+  // о потере соединения с сервером: продолжать сидеть в трее без связи с сервером бессмысленно.
+  if (action === 'quit') { isQuitting = true; app.quit(); }
 });
 
 // Скачивание прикреплённого файла: через главный процесс, а не обычной навигацией по ссылке —

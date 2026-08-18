@@ -126,6 +126,38 @@
   window.uiAlert = (message, title = 'Сообщение') =>
     modal({ title: `${uiIcon('warn')} ${title}`, message, buttons: [{ label: 'ОК', value: true, className: 'ui-btn-primary' }] });
 
+  // Диалог "потеряна связь с сервером" — визуально тот же modal(), что и uiConfirm/uiAlert, но
+  // не через него напрямую: нужно уметь программно СКРЫТЬ диалог, если соединение восстановится
+  // само (см. connectWs в каждом окне), а modal() отдаёт наружу только Promise без такой ручки.
+  // Один диалог на окно (каждое окно — свой рендерер, свой WS) — если открыто несколько окон и
+  // сервер лёг, у каждого появится свой, это ожидаемо, не дублирование одного и того же окна.
+  let connectionLostOverlay = null;
+  window.showConnectionLostModal = (onRetry) => {
+    if (connectionLostOverlay) return; // уже показан в этом окне
+    const overlay = document.createElement('div');
+    overlay.className = 'ui-modal-overlay';
+    const box = document.createElement('div');
+    box.className = 'ui-modal-box';
+    box.innerHTML = `
+      <div class="ui-modal-title">${uiIcon('warn')} Соединение с сервером потеряно</div>
+      <div class="ui-modal-msg">Проверьте подключение к сети. Можно попробовать ещё раз или закрыть приложение.</div>
+      <div class="ui-modal-actions">
+        <button class="ui-btn-ghost" id="uiClExit">Выйти</button>
+        <button class="ui-btn-primary" id="uiClRetry">Повторить</button>
+      </div>
+    `;
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    connectionLostOverlay = overlay;
+    box.querySelector('#uiClExit').onclick = () => window.desktop.windowAction('quit');
+    box.querySelector('#uiClRetry').onclick = () => { window.hideConnectionLostModal(); onRetry(); };
+  };
+  window.hideConnectionLostModal = () => {
+    if (!connectionLostOverlay) return;
+    connectionLostOverlay.remove();
+    connectionLostOverlay = null;
+  };
+
   // Короткое ненавязчивое уведомление ("Файл скачан", "Скопировано в буфер обмена") — в отличие
   // от uiAlert, ничего не блокирует и само пропадает через пару секунд.
   window.uiToast = (message, opts = {}) => {
