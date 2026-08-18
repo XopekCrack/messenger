@@ -32,6 +32,7 @@ const DEFAULT_SETTINGS = {
   theme: 'dark',             // 'dark' | 'light'
   downloadPath: null,        // папка для сохранения файлов по умолчанию (null = каждый раз спрашивать)
   idleThresholdMinutes: 30,  // сколько минут без активности мыши/клавиатуры -> статус "Отошёл"
+  uiScale: 1,                // масштаб всего интерфейса (1 = 100%, текущий размер как есть) — см. applyUiScale
   rosterSize: null,
   chatSize: null,
   broadcastSize: null,
@@ -163,6 +164,7 @@ function createWindow(key, file, payload, size) {
       sandbox: false, // preload использует require('os') для hostname — в песочнице это запрещено
     },
   });
+  win.webContents.setZoomFactor(settings.uiScale || 1); // масштаб всего интерфейса, см. DEFAULT_SETTINGS.uiScale
   const qs = new URLSearchParams(payload).toString();
   win.loadFile(path.join(__dirname, 'renderer', file), { search: qs });
   win.once('ready-to-show', () => win.show());
@@ -197,6 +199,7 @@ function createRoster() {
       sandbox: false,
     },
   });
+  rosterWin.webContents.setZoomFactor(settings.uiScale || 1); // масштаб всего интерфейса, см. DEFAULT_SETTINGS.uiScale
   rosterWin.loadFile(path.join(__dirname, 'renderer', 'roster.html'));
   rosterWin.once('ready-to-show', () => rosterWin.show());
   attachSizePersistence(rosterWin, 'rosterSize');
@@ -446,6 +449,9 @@ ipcMain.on('set-settings', (event, partial) => {
   saveSettings();
   if ('alwaysOnTop' in partial) {
     for (const win of allWindows()) win.setAlwaysOnTop(settings.alwaysOnTop);
+  }
+  if ('uiScale' in partial) {
+    for (const win of allWindows()) win.webContents.setZoomFactor(settings.uiScale || 1);
   }
   // Тема (и в перспективе другие настройки внешнего вида) должны применяться сразу во всех открытых
   // окнах, не только в том, где их поменяли — иначе пришлось бы перезапускать каждое окно вручную.
