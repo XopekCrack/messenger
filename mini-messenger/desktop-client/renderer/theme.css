@@ -19,11 +19,25 @@
   --shadow: 0 12px 28px rgba(30, 34, 44, .18);
 }
 
+/* На Windows 7 нет системного эмодзи-шрифта вообще — там, где эмодзи рисуются НЕ картинкой (см.
+   .twemoji/emojiHtml ниже), а обычным текстом (в первую очередь — поле ввода: <textarea> физически
+   не умеет показывать <img> внутри своего значения, только текст шрифтом ОС), многие символы
+   превращались в пустые квадраты ("тофу" — в шрифтах Win7 для них просто нет глифа). Noto Emoji —
+   открытый (SIL OFL) чёрно-белый шрифт именно с эмодзи-глифами, добавлен последним в стек шрифтов:
+   для обычных букв ни на что не влияет (использ. Segoe UI и т.п.), а для символов, для которых их
+   не нашлось ни в одном из перечисленных выше шрифтов, браузер возьмёт глиф уже отсюда — вместо
+   квадрата будет видно хотя бы чёрно-белое изображение символа. */
+@font-face {
+  font-family: 'Noto Emoji';
+  src: url('fonts/NotoEmoji-Regular.woff2') format('woff2');
+  font-display: swap;
+}
+
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; overflow: hidden; }
 body {
   background: var(--bg); color: var(--text);
-  font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif, "Noto Emoji";
   font-size: 13px; overflow: hidden; user-select: none;
   border: 1px solid var(--border);
 }
