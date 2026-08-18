@@ -807,10 +807,16 @@ async function startApp() {
   document.querySelector('#me-bar .gear').innerHTML = uiIcon('gear');
   document.getElementById('me-bar').onclick = toggleProfilePanel;
   document.getElementById('me-bar').title = 'Профиль и настройки';
-  await refreshUsers();
-  applyUnreadState(await desktop.getUnreadState()); // на случай, если что-то пришло, пока ростер ещё не слушал unread-state
-  await seedMissedUnread();
+  // connectWs() — до всего остального и безусловно: если сервер лежал уже на момент запуска
+  // приложения (а не просто отвалился во время работы), раньше это было багом — await refreshUsers()
+  // ниже падал (fetch по недоступному серверу) без try/catch, и connectWs() просто никогда не
+  // вызывался — некому было даже начать WS-реконнект и показать диалог о потере соединения.
   connectWs();
+  try {
+    await refreshUsers();
+    applyUnreadState(await desktop.getUnreadState()); // на случай, если что-то пришло, пока ростер ещё не слушал unread-state
+    await seedMissedUnread();
+  } catch { /* сервер недоступен уже при запуске — connectWs() выше сам занимается переподключением и покажет диалог */ }
   setInterval(refreshUsers, 20000);
 }
 
