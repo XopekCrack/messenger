@@ -164,7 +164,11 @@ function createWindow(key, file, payload, size) {
       sandbox: false, // preload использует require('os') для hostname — в песочнице это запрещено
     },
   });
-  win.webContents.setZoomFactor(settings.uiScale || 1); // масштаб всего интерфейса, см. DEFAULT_SETTINGS.uiScale
+  // setZoomFactor ДО навигации не работает — Chromium сбрасывает зум при переходе на новую страницу,
+  // так что окно, открытое ПОСЛЕ смены масштаба в настройках, всё равно появлялось со старым (пока
+  // само окно не открывали, set-settings не успевал до него докричаться). Применяем уже после
+  // загрузки страницы (did-finish-load), а не сразу после создания BrowserWindow.
+  win.webContents.on('did-finish-load', () => win.webContents.setZoomFactor(settings.uiScale || 1));
   const qs = new URLSearchParams(payload).toString();
   win.loadFile(path.join(__dirname, 'renderer', file), { search: qs });
   win.once('ready-to-show', () => win.show());
@@ -199,7 +203,8 @@ function createRoster() {
       sandbox: false,
     },
   });
-  rosterWin.webContents.setZoomFactor(settings.uiScale || 1); // масштаб всего интерфейса, см. DEFAULT_SETTINGS.uiScale
+  // См. комментарий в createWindow() — setZoomFactor до навигации не переживает загрузку страницы.
+  rosterWin.webContents.on('did-finish-load', () => rosterWin.webContents.setZoomFactor(settings.uiScale || 1));
   rosterWin.loadFile(path.join(__dirname, 'renderer', 'roster.html'));
   rosterWin.once('ready-to-show', () => rosterWin.show());
   attachSizePersistence(rosterWin, 'rosterSize');
