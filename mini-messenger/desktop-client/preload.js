@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('desktop', {
   onSettingsChanged: (cb) => ipcRenderer.on('settings-changed', (event, settings) => cb(settings)),
   onWindowState: (cb) => ipcRenderer.on('window-state', (event, state) => cb(state)),
   getServerUrl: () => ipcRenderer.invoke('get-server-url'),
+  setServerUrl: (url) => ipcRenderer.invoke('set-server-url', url),
   getIdleState: () => ipcRenderer.invoke('get-idle-state'),
   getSettings: () => ipcRenderer.invoke('get-settings'),
   setSettings: (partial) => ipcRenderer.send('set-settings', partial),
@@ -23,4 +24,7 @@ contextBridge.exposeInMainWorld('desktop', {
   onDownloadProgress: (cb) => ipcRenderer.on('download-progress', (event, payload) => cb(payload)),
   onToast: (cb) => ipcRenderer.on('toast', (event, payload) => cb(payload)),
   pickDownloadFolder: () => ipcRenderer.invoke('pick-download-folder'),
+  getUnreadState: () => ipcRenderer.invoke('get-unread-state'),
+  seedUnread: (payload) => ipcRenderer.invoke('seed-unread', payload),
+  onUnreadState: (cb) => ipcRenderer.on('unread-state', (event, state) => cb(state)),
 });

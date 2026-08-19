@@ -1,5 +1,5 @@
 // Главный процесс Electron — окна, трей, уведомления, настройки, отправка и скачивание файлов
-const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, Notification, powerMonitor, dialog, session, clipboard } = require('electron');
+const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, Notification, powerMonitor, dialog, session, clipboard, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
@@ -10,18 +10,34 @@ const { SERVER_URL } = require('./config');
 // стандартный логотип Electron вместо своего.
 const APP_ICON_PATH = path.join(__dirname, 'build', 'icon.ico');
 
+// GPU/аппаратное ускорение Chromium на Windows 7 нестабильно (устаревшие/неполные драйверы DirectX,
+// не рассчитанные на современный Chromium) и регулярно приводит к падениям с "unknown software
+// exception (0x80000003)" — особенно на выключении/перезагрузке ПК, когда драйвер экрана начинает
+// завершаться прямо посреди работы GPU-процесса. Более ранняя попытка (перехват WM_QUERYENDSESSION,
+// см. createRoster ниже) решала только одну из возможных причин этого краша — сам краш у части
+// пользователей остался, так что отключаем GPU-ускорение вовсе, но ТОЛЬКО на Windows 7 (ядро "6.1" —
+// см. таблицу версий https://learn.microsoft.com/windows/win32/sysinfo/operating-system-version):
+// на более новых Windows графика стабильна, отключать её там смысла нет, только потеряем плавность
+// CSS-анимаций. Обязательно ДО app.whenReady()/создания любого окна — иначе не подействует.
+if (process.platform === 'win32' && require('os').release().startsWith('6.1')) {
+  app.disableHardwareAcceleration();
+}
+
 const SETTINGS_PATH = path.join(app.getPath('userData'), 'settings.json');
 
 const DEFAULT_SETTINGS = {
   openChatOnMessage: false, // открывать окно чата при новом сообщении (вместо/вместе с уведомлением)
   rememberWindowSize: false, // запоминать размер окон между запусками
   alwaysOnTop: false,        // держать окна поверх остальных
+  hideNameInMessages: true,  // не повторять имя собеседника в каждом сообщении личного чата (по умолчанию включено)
   theme: 'dark',             // 'dark' | 'light'
   downloadPath: null,        // папка для сохранения файлов по умолчанию (null = каждый раз спрашивать)
   idleThresholdMinutes: 30,  // сколько минут без активности мыши/клавиатуры -> статус "Отошёл"
+  uiScale: 1,                // масштаб всего интерфейса (1 = 100%, текущий размер как есть) — см. applyUiScale
   rosterSize: null,
   chatSize: null,
   broadcastSize: null,
+  serverUrlOverride: null,   // переопределяет SERVER_URL из config.js без пересборки — см. Ctrl+S на экране входа
 };
 
 function loadSettings() {
@@ -38,6 +54,40 @@ let tray = null;
 let isQuitting = false;
 const namedWins = new Map(); // "type:id" -> BrowserWindow (чаты, рассылки)
 
+// ---------- Непрочитанные — только в памяти на время работы приложения ----------
+// Источник истины один — главный процесс: у него уже есть вся нужная информация (какое окно сейчас
+// открыто/сфокусировано) в notify() ниже, откуда и вызывается markUnread. Ростер получает состояние
+// через unread-state (пуш при изменении) и get-unread-state (разовый запрос при своём старте — вдруг
+// что-то пришло, пока он ещё не был готов слушать пуши). Считаем именно количество (не просто факт
+// непрочитанного) — в ростере это индикатор-счётчик, а не точка.
+const unreadDms = new Map(); // userId -> count
+let unreadBroadcastCount = 0;
+
+function unreadStatePayload() {
+  return { dms: Object.fromEntries(unreadDms), broadcast: unreadBroadcastCount };
+}
+function broadcastUnreadState() {
+  if (rosterWin && !rosterWin.isDestroyed()) {
+    rosterWin.webContents.send('unread-state', unreadStatePayload());
+  }
+}
+function markUnread(openPayload) {
+  if (!openPayload) return;
+  if (openPayload.file === 'broadcast.html') unreadBroadcastCount += 1;
+  else if (openPayload.type === 'dm') unreadDms.set(openPayload.id, (unreadDms.get(openPayload.id) || 0) + 1);
+  // 'room' (общий чат) — в ростере нет отдельного пункта для него, бейджить пока негде, пропускаем
+  broadcastUnreadState();
+}
+// Открытие/фокус окна = прочитано. Вызывается и для уже открытого окна (существующая ветка
+// createWindow), и для только что созданного, и при возврате фокуса на уже открытое later (см.
+// 'focus' в createWindow) — новое сообщение могло прийти, пока окно было открыто, но не в фокусе.
+function clearUnreadForWindow(file, payload) {
+  let changed = false;
+  if (file === 'broadcast.html') { changed = unreadBroadcastCount > 0; unreadBroadcastCount = 0; }
+  else if (payload?.type === 'dm') changed = unreadDms.delete(payload.id);
+  if (changed) broadcastUnreadState();
+}
+
 function allWindows() {
   return [rosterWin, ...namedWins.values()].filter((w) => w && !w.isDestroyed());
 }
@@ -47,14 +97,31 @@ function debounce(fn, ms) {
   return (...args) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), ms); };
 }
 
+// Раньше запоминался только размер, не позиция — окно каждый раз пересоздавалось там, где Electron
+// сам решит (обычно по центру экрана), а не там, где его оставил пользователь.
 function attachSizePersistence(win, key) {
   const persist = debounce(() => {
     if (!settings.rememberWindowSize) return;
     const [width, height] = win.getSize();
-    settings[key] = { width, height };
+    const [x, y] = win.getPosition();
+    settings[key] = { width, height, x, y };
     saveSettings();
   }, 600);
   win.on('resize', persist);
+  win.on('move', persist);
+}
+
+// Сохранённая позиция могла остаться от монитора, который сейчас отключён (ноутбук унесли от
+// докстанции, второй монитор выключен и т.п.) — тогда окно открылось бы за пределами видимой
+// области и стало бы недоступно. Восстанавливаем позицию, только если она хотя бы частично
+// попадает в рабочую область какого-нибудь из подключённых сейчас мониторов.
+function clampToVisibleArea(x, y, width, height) {
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  const fits = screen.getAllDisplays().some((d) => {
+    const b = d.workArea;
+    return x < b.x + b.width && x + width > b.x && y < b.y + b.height && y + height > b.y;
+  });
+  return fits ? { x, y } : null;
 }
 
 // Кнопка "развернуть" в шапке должна показывать актуальную иконку (квадрат / два квадрата),
@@ -75,17 +142,21 @@ function sizeKeyForFile(file) {
 function createWindow(key, file, payload, size) {
   const existing = namedWins.get(key);
   if (existing && !existing.isDestroyed()) {
-    existing.focus();
+    existing.show(); // show() и так фокусирует — на случай, если окно почему-то было скрыто
+    clearUnreadForWindow(file, payload);
     return existing;
   }
   const sizeKey = sizeKeyForFile(file);
   const saved = sizeKey && settings.rememberWindowSize ? settings[sizeKey] : null;
+  const width = saved?.width || size?.width || 380;
+  const height = saved?.height || size?.height || 520;
+  const pos = clampToVisibleArea(saved?.x, saved?.y, width, height);
   const win = new BrowserWindow({
-    width: saved?.width || size?.width || 380,
-    height: saved?.height || size?.height || 520,
+    width, height, ...(pos || {}),
     minWidth: size?.minWidth || 300,
     minHeight: size?.minHeight || 360,
     frame: false,
+    show: false, // показываем только после ready-to-show — иначе видно, как окно дёргается/дорисовывается
     icon: APP_ICON_PATH,
     backgroundColor: settings.theme === 'light' ? '#f3f4f7' : '#191b20',
     alwaysOnTop: settings.alwaysOnTop,
@@ -95,23 +166,52 @@ function createWindow(key, file, payload, size) {
       sandbox: false, // preload использует require('os') для hostname — в песочнице это запрещено
     },
   });
+  // setZoomFactor ДО навигации не работает — Chromium сбрасывает зум при переходе на новую страницу,
+  // так что окно, открытое ПОСЛЕ смены масштаба в настройках, всё равно появлялось со старым (пока
+  // само окно не открывали, set-settings не успевал до него докричаться). Применяем уже после
+  // загрузки страницы (did-finish-load), а не сразу после создания BrowserWindow.
+  win.webContents.on('did-finish-load', () => win.webContents.setZoomFactor(settings.uiScale || 1));
   const qs = new URLSearchParams(payload).toString();
   win.loadFile(path.join(__dirname, 'renderer', file), { search: qs });
+  win.once('ready-to-show', () => win.show());
+  // Тот же перехват завершения сеанса, что и у ростера (см. createRoster) — но здесь ОБЯЗАТЕЛЕН
+  // на каждом отдельном окне чата/рассылки, а не только на ростере: Windows шлёт WM_QUERYENDSESSION/
+  // WM_ENDSESSION КАЖДОМУ окну напрямую и независимо, а не только главному, у которого он раньше
+  // был единственным перехватчиком. Именно окно чата (а не ростер) и падало на Win7 при перезагрузке
+  // — судя по всему, особенно легко, если окно только что создано и ещё не до конца загрузилось
+  // (штатная обработка Chromium для такого окна на Win7, похоже, менее надёжна). Не полагаемся на
+  // штатное закрытие — сразу принудительно уничтожаем себя.
+  if (process.platform === 'win32') {
+    const onSessionEnding = () => {
+      isQuitting = true;
+      if (!win.isDestroyed()) win.destroy();
+      app.quit();
+    };
+    win.hookWindowMessage(0x0011, onSessionEnding);
+    win.hookWindowMessage(0x0016, onSessionEnding);
+  }
+  // Пользователь мог вернуться к уже открытому, но не сфокусированному окну (Alt+Tab, клик по
+  // панели задач) без повторного клика по контакту/значку в ростере — это тоже прочтение.
+  win.on('focus', () => clearUnreadForWindow(file, payload));
   namedWins.set(key, win);
   win.on('closed', () => namedWins.delete(key));
   attachWindowStateEvents(win);
   if (sizeKey) attachSizePersistence(win, sizeKey);
+  clearUnreadForWindow(file, payload);
   return win;
 }
 
 function createRoster() {
   const saved = settings.rememberWindowSize ? settings.rosterSize : null;
+  const width = saved?.width || 300;
+  const height = saved?.height || 620;
+  const pos = clampToVisibleArea(saved?.x, saved?.y, width, height);
   rosterWin = new BrowserWindow({
-    width: saved?.width || 300,
-    height: saved?.height || 620,
+    width, height, ...(pos || {}),
     minWidth: 260,
     minHeight: 420,
     frame: false,
+    show: false, // показываем только после ready-to-show — иначе видно, как окно дёргается/дорисовывается
     icon: APP_ICON_PATH,
     backgroundColor: settings.theme === 'light' ? '#f3f4f7' : '#191b20',
     alwaysOnTop: settings.alwaysOnTop,
@@ -121,9 +221,41 @@ function createRoster() {
       sandbox: false,
     },
   });
+  // См. комментарий в createWindow() — setZoomFactor до навигации не переживает загрузку страницы.
+  rosterWin.webContents.on('did-finish-load', () => rosterWin.webContents.setZoomFactor(settings.uiScale || 1));
   rosterWin.loadFile(path.join(__dirname, 'renderer', 'roster.html'));
+  rosterWin.once('ready-to-show', () => rosterWin.show());
   attachSizePersistence(rosterWin, 'rosterSize');
   attachWindowStateEvents(rosterWin);
+
+  // На Windows настоящее завершение сеанса (выключение/перезагрузка ПК) доходит до окна тем же
+  // событием 'close', что и обычный клик по крестику — а обработчик ниже в норме отменяет close
+  // (preventDefault) и просто прячет окно в трей. Во время реального выключения это "отменённое"
+  // закрытие сбивает штатную последовательность завершения Chromium и на Windows 7 роняло процесс
+  // с "unknown software exception (0x80000003)" прямо в момент выключения/перезагрузки ПК (см.
+  // https://github.com/electron/electron/issues/34311 — тот же паттерн: close-хендлер, который не
+  // даёт окну закрыться, ломает штатную обработку WM_QUERYENDSESSION).
+  //
+  // Выключение и перезагрузка ведут себя по-разному: после первой версии фикса (только 0x0011 +
+  // app.quit()) краш на простом выключении пропал, а на перезагрузке остался — похоже, у Windows
+  // при перезагрузке меньше запаса по времени до принудительного завершения процесса, чем при
+  // простом выключении (ей ведь ещё нужно успеть погасить и заново поднять видеодрайвер под POST),
+  // и обычный асинхронный каскад app.quit() (window-all-closed → before-quit → закрытие каждого
+  // окна по очереди) может не укладываться в это окно. Теперь: слушаем ОБА сигнала — WM_QUERYEND-
+  // SESSION (0x0011, приходит первым) И WM_ENDSESSION (0x0016, на случай, если первый придёт
+  // слишком поздно/не будет обработан вовремя) — и сразу же, синхронно, а не через обычную
+  // последовательность закрытия, уничтожаем все дочерние окна (win.destroy(), не close() — не ждёт
+  // события 'close' и связанной с ним логики) перед тем, как звать app.quit().
+  if (process.platform === 'win32') {
+    const onSessionEnding = () => {
+      if (isQuitting) return; // уже начали закрываться (напр. от второго сигнала) — не дублируем
+      isQuitting = true;
+      for (const win of namedWins.values()) { if (!win.isDestroyed()) win.destroy(); }
+      app.quit();
+    };
+    rosterWin.hookWindowMessage(0x0011, onSessionEnding);
+    rosterWin.hookWindowMessage(0x0016, onSessionEnding);
+  }
 
   // Не закрываем насовсем — сворачиваем в трей, чтобы приложение продолжало получать сообщения
   rosterWin.on('close', (e) => {
@@ -301,6 +433,9 @@ ipcMain.on('window-action', (event, action) => {
   if (action === 'minimize') win.minimize();
   if (action === 'maximize') { win.isMaximized() ? win.unmaximize() : win.maximize(); }
   if (action === 'close') win.close();
+  // Настоящий выход из приложения (не сворачивание в трей) — например, кнопка "Выйти" в диалоге
+  // о потере соединения с сервером: продолжать сидеть в трее без связи с сервером бессмысленно.
+  if (action === 'quit') { isQuitting = true; app.quit(); }
 });
 
 // Скачивание прикреплённого файла: через главный процесс, а не обычной навигацией по ссылке —
@@ -323,7 +458,34 @@ ipcMain.handle('pick-download-folder', async (event) => {
   return result.filePaths[0];
 });
 
-ipcMain.handle('get-server-url', () => SERVER_URL);
+// Адрес сервера обычно зашит в config.js на этапе сборки (см. комментарий там) — но неудобно
+// пересобирать .exe ради смены IP. serverUrlOverride (в settings.json, тот же файл, что и остальные
+// настройки) даёт возможность переопределить его без пересборки — скрытое поле на экране входа,
+// вызываемое Ctrl+S (см. roster.html), сохраняет туда через set-server-url.
+ipcMain.handle('get-server-url', () => settings.serverUrlOverride || SERVER_URL);
+ipcMain.handle('set-server-url', (event, url) => {
+  settings.serverUrlOverride = String(url || '').trim() || null;
+  saveSettings();
+  return settings.serverUrlOverride || SERVER_URL;
+});
+ipcMain.handle('get-unread-state', () => unreadStatePayload());
+// unreadDms/unreadBroadcastCount выше — только в памяти этого процесса, пополняются исключительно
+// живыми WS-событиями (см. markUnread). Если клиент был полностью закрыт (не просто свёрнут в
+// трей), при следующем запуске эти счётчики стартуют с нуля — пропущенные, пока клиент был офлайн,
+// рассылки/сообщения не показывают значок непрочитанного, пока пользователь не откроет диалог
+// вручную. Ростер досчитывает пропущенное по данным сервера при каждом старте (см. seedMissedUnread
+// в roster.html) и один раз "заряжает" счётчики через этот IPC — до того, как подключится WS,
+// поэтому гонки с живыми событиями нет.
+ipcMain.handle('seed-unread', (event, payload) => {
+  if (!payload) return;
+  if (typeof payload.broadcast === 'number' && payload.broadcast > 0) unreadBroadcastCount = payload.broadcast;
+  if (payload.dms) {
+    for (const [uid, count] of Object.entries(payload.dms)) {
+      if (count > 0) unreadDms.set(Number(uid), count);
+    }
+  }
+  broadcastUnreadState();
+});
 // Реальный статус простоя ПРЯМО СЕЙЧАС (не дожидаясь ближайшего 15-секундного тика) — нужен в
 // момент открытия нового WS-подключения, чтобы оно сразу сообщило правильный статус, а не
 // безусловно "в сети", даже если человек на самом деле давно отошёл (см. комментарий у onopen
@@ -335,6 +497,9 @@ ipcMain.on('set-settings', (event, partial) => {
   saveSettings();
   if ('alwaysOnTop' in partial) {
     for (const win of allWindows()) win.setAlwaysOnTop(settings.alwaysOnTop);
+  }
+  if ('uiScale' in partial) {
+    for (const win of allWindows()) win.webContents.setZoomFactor(settings.uiScale || 1);
   }
   // Тема (и в перспективе другие настройки внешнего вида) должны применяться сразу во всех открытых
   // окнах, не только в том, где их поменяли — иначе пришлось бы перезапускать каждое окно вручную.
@@ -360,18 +525,17 @@ ipcMain.on('notify', (event, payload) => {
   const winSize = file === 'broadcast.html' ? { width: 420, height: 520, minWidth: 360, minHeight: 400 } : undefined;
 
   if (settings.openChatOnMessage && openPayload) {
-    const win = createWindow(key, file, openPayload, winSize);
-    win.show();
-    win.focus();
-    return; // само появление окна уже служит уведомлением
+    createWindow(key, file, openPayload, winSize); // само появление окна уже служит уведомлением и отмечает как прочитанное
+    return;
   }
 
   const targetWin = key ? namedWins.get(key) : null;
-  if (targetWin && !targetWin.isDestroyed() && targetWin.isFocused()) return; // уже читает этот чат — не дублируем
+  if (targetWin && !targetWin.isDestroyed() && targetWin.isFocused()) return; // уже читает этот чат — не дублируем, и это уже прочитано
 
+  markUnread(openPayload); // не читает прямо сейчас — считается непрочитанным до открытия/фокуса окна
   const n = new Notification({ title, body });
   n.on('click', () => {
-    if (openPayload) { const w = createWindow(key, file, openPayload, winSize); w.show(); w.focus(); }
+    if (openPayload) createWindow(key, file, openPayload, winSize);
     else { rosterWin.show(); rosterWin.focus(); }
   });
   n.show();
