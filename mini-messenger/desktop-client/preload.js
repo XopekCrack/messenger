@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('desktop', {
   onSettingsChanged: (cb) => ipcRenderer.on('settings-changed', (event, settings) => cb(settings)),
   onWindowState: (cb) => ipcRenderer.on('window-state', (event, state) => cb(state)),
   getServerUrl: () => ipcRenderer.invoke('get-server-url'),
+  setServerUrl: (url) => ipcRenderer.invoke('set-server-url', url),
   getIdleState: () => ipcRenderer.invoke('get-idle-state'),
   getSettings: () => ipcRenderer.invoke('get-settings'),
   setSettings: (partial) => ipcRenderer.send('set-settings', partial),

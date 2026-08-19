@@ -37,6 +37,7 @@ const DEFAULT_SETTINGS = {
   rosterSize: null,
   chatSize: null,
   broadcastSize: null,
+  serverUrlOverride: null,   // переопределяет SERVER_URL из config.js без пересборки — см. Ctrl+S на экране входа
 };
 
 function loadSettings() {
@@ -457,7 +458,16 @@ ipcMain.handle('pick-download-folder', async (event) => {
   return result.filePaths[0];
 });
 
-ipcMain.handle('get-server-url', () => SERVER_URL);
+// Адрес сервера обычно зашит в config.js на этапе сборки (см. комментарий там) — но неудобно
+// пересобирать .exe ради смены IP. serverUrlOverride (в settings.json, тот же файл, что и остальные
+// настройки) даёт возможность переопределить его без пересборки — скрытое поле на экране входа,
+// вызываемое Ctrl+S (см. roster.html), сохраняет туда через set-server-url.
+ipcMain.handle('get-server-url', () => settings.serverUrlOverride || SERVER_URL);
+ipcMain.handle('set-server-url', (event, url) => {
+  settings.serverUrlOverride = String(url || '').trim() || null;
+  saveSettings();
+  return settings.serverUrlOverride || SERVER_URL;
+});
 ipcMain.handle('get-unread-state', () => unreadStatePayload());
 // unreadDms/unreadBroadcastCount выше — только в памяти этого процесса, пополняются исключительно
 // живыми WS-событиями (см. markUnread). Если клиент был полностью закрыт (не просто свёрнут в

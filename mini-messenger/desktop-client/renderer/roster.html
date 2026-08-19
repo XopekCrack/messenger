@@ -319,6 +319,21 @@ async function doAuth() {
   }
 }
 
+// Адрес сервера обычно зашит при сборке (см. config.js) — неудобно пересобирать .exe ради смены IP.
+// Скрытое поле на экране входа, вызываемое Ctrl+S (специально не на виду — это не то, что должен
+// трогать рядовой сотрудник; для него никакой кнопки/подсказки в интерфейсе нет).
+document.addEventListener('keydown', async (e) => {
+  if (!e.ctrlKey || e.key.toLowerCase() !== 's') return;
+  if (document.getElementById('app').classList.contains('active')) return; // уже вошли — не наш экран
+  e.preventDefault(); // иначе Chromium попытается открыть системный диалог "Сохранить страницу"
+  const value = await uiPrompt('Адрес сервера (например, http://192.168.0.11:3000):', serverUrl, { title: 'Адрес сервера', okText: 'Сохранить' });
+  if (value === null) return; // отменили
+  const next = value.trim();
+  if (!next || next === serverUrl) return;
+  serverUrl = await desktop.setServerUrl(next);
+  uiToast('Адрес сервера сохранён: ' + serverUrl);
+});
+
 async function api(path, opts) {
   const res = await fetch(serverUrl + path, {
     ...opts,
