@@ -15,6 +15,7 @@
   /* ---- Логин ---- */
   #auth { flex: 1; display: flex; flex-direction: column; justify-content: center; padding: 26px; gap: 8px; }
   #authForm { display: flex; flex-direction: column; gap: 8px; }
+  #authLogo { display: block; height: 56px; width: auto; margin: 0 auto 10px; }
   #auth h1 { font-size: 22px; margin: 0 0 4px; text-align: center; font-weight: 800; letter-spacing: .3px; }
   #auth .auth-subtitle { font-size: 12px; margin: 0 0 16px; text-align: center; color: var(--muted); }
   #auth input { -webkit-app-region: no-drag; width: 100%; padding: 10px 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 9px; color: var(--text); font-size: 13px; }
@@ -185,6 +186,7 @@
 </div>
 
 <div id="auth">
+  <svg id="authLogo" viewBox="76 18 48 106" fill="var(--text)"><path d="M98.47 96.30 L99.45 93.02 L100.00 22.00 L100.55 93.02 L101.53 96.30 L102.52 96.89 L108.49 91.51 L103.11 97.48 L103.70 98.47 L106.96 99.27 L120.00 100.00 L106.96 100.73 L103.70 101.53 L103.11 102.52 L108.49 108.49 L102.52 103.11 L101.53 103.70 L100.73 106.96 L100.00 120.00 L99.27 106.96 L98.47 103.70 L97.48 103.11 L91.51 108.49 L96.89 102.52 L96.30 101.53 L93.04 100.73 L80.00 100.00 L93.04 99.27 L96.30 98.47 L96.89 97.48 L91.51 91.51 L97.48 96.89 Z"/></svg>
   <h1>Искра</h1>
   <div class="auth-subtitle">Корпоративный мессенджер Липецкстата</div>
   <div class="err" id="authErr"></div>
