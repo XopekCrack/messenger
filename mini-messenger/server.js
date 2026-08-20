@@ -835,6 +835,19 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
+    // "Печатает..." — ничего не сохраняем, чистый ретранслятор с throttle на СТОРОНЕ КЛИЕНТА
+    // (см. sendTyping в chat.html); индикатор у получателя гаснет сам по таймауту без нового
+    // события, так что явного "закончил печатать" сигнала не нужно.
+    if (msg.type === 'typing') {
+      const out = JSON.stringify({ type: 'typing', room: msg.room || null, from_id: user.id, from_user: user.display_name });
+      if (msg.room) {
+        for (const [c, meta] of connMeta) { if (meta.userId !== user.id) c.send(out); }
+      } else if (msg.to) {
+        (online.get(Number(msg.to)) || new Set()).forEach((c) => c.send(out));
+      }
+      return;
+    }
+
     if (msg.type === 'read') {
       const peer = Number(msg.peer);
       const upTo = Number(msg.upTo);

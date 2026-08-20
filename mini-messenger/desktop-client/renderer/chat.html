@@ -102,6 +102,17 @@
   .unread-divider span { font-size: 10px; font-weight: 700; color: var(--accent); text-transform: uppercase; letter-spacing: .4px; white-space: nowrap; }
 
   #composer { position: relative; display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--border); background: var(--panel); flex-shrink: 0; align-items: flex-end; }
+  /* "Печатает..." — плавающая плашка над строкой ввода (см. sendTyping/showTypingIndicator ниже),
+     не занимает своё место в раскладке (position:absolute), поэтому не сдвигает сообщения при
+     появлении/исчезновении. */
+  #typingIndicator {
+    position: absolute; left: 14px; bottom: 100%; margin-bottom: 6px; z-index: 20;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 3px 10px; font-size: 11px; font-style: italic; color: var(--muted); box-shadow: var(--shadow);
+    opacity: 0; transform: translateY(4px); pointer-events: none;
+    transition: opacity .15s ease, transform .15s ease;
+  }
+  #typingIndicator.show { opacity: 1; transform: translateY(0); }
   /* #text раньше сам был скруглённым (border-radius:18px) и одновременно overflow-y:auto — кастомный
      ::-webkit-scrollbar (см. theme.css) в Chromium не обрезается border-radius самого элемента, из-за
      чего прямоугольная полоса скролла торчала за пределы скруглённых углов. Обёртка берёт на себя
@@ -232,6 +243,7 @@
 
 <div id="messages"></div>
 <div id="composer">
+  <div id="typingIndicator"></div>
   <button class="round" id="attach" title="Прикрепить файл"></button>
   <input type="file" id="fileInput" multiple style="display:none">
   <div id="textWrap">
@@ -553,9 +565,14 @@ function connectWs() {
     // Собеседник (в этом окне — data.peer) прочитал мои сообщения по data.upTo включительно —
     // перекрашиваем галочки уже отрисованных своих сообщений из серых в синие, без перезагрузки.
     if (data.type === 'read-receipt' && type === 'dm' && data.peer === id) applyReadReceipt(data.upTo);
+    if (data.type === 'typing') {
+      const belongsTyping = type === 'room' ? data.room === id : data.from_id === id;
+      if (belongsTyping) showTypingIndicator(data.from_user);
+      return;
+    }
     if (data.type !== 'message') return;
     const belongs = type === 'room' ? data.room === id : (data.from_id === id || data.to_id === id);
-    if (belongs) addMessage(data);
+    if (belongs) { hideTypingIndicator(); addMessage(data); } // раз сообщение пришло — печатать закончил
   };
   ws.onclose = () => {
     if (!wsLostTimer) wsLostTimer = setTimeout(() => { wsLostTimer = null; showConnectionLostModal(connectWs); }, 5000);
@@ -569,6 +586,33 @@ function connectWs() {
 desktop.onIdleState(({ state }) => {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'status', state }));
 });
+
+// ---------- "Печатает..." — ничего не хранится на сервере, чистая ретрансляция (см. server.js).
+// Отправляем не чаще раза в TYPING_THROTTLE_MS (иначе WS-событие на каждую нажатую клавишу), а у
+// получателя индикатор гаснет сам через TYPING_TIMEOUT_MS без нового события — эквивалент явного
+// "закончил печатать", которого сервер не шлёт.
+const TYPING_THROTTLE_MS = 2500;
+const TYPING_TIMEOUT_MS = 4000;
+let lastTypingSentAt = 0;
+function sendTyping() {
+  if (!textEl.value.trim()) return; // стёр всё — не поддерживаем индикатор пустым полем
+  const now = Date.now();
+  if (now - lastTypingSentAt < TYPING_THROTTLE_MS) return;
+  lastTypingSentAt = now;
+  sendPayload(type === 'room' ? { type: 'typing', room: id } : { type: 'typing', to: id });
+}
+let typingHideTimer = null;
+function showTypingIndicator(name) {
+  const el = document.getElementById('typingIndicator');
+  el.textContent = `${name} печатает...`;
+  el.classList.add('show');
+  clearTimeout(typingHideTimer);
+  typingHideTimer = setTimeout(hideTypingIndicator, TYPING_TIMEOUT_MS);
+}
+function hideTypingIndicator() {
+  clearTimeout(typingHideTimer);
+  document.getElementById('typingIndicator').classList.remove('show');
+}
 
 function sendPayload(payload) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(payload));
@@ -591,6 +635,7 @@ function send() {
   sendPayload(payload);
   input.value = '';
   input.style.height = 'auto'; // сброс авто-роста после отправки — снова однострочное поле
+  lastTypingSentAt = 0; // следующее нажатие клавиши для НОВОГО сообщения не должно ждать throttle
 }
 
 // Enter — отправляет сообщение; Shift+Enter — переносит строку (для этого поле ввода и сделано
@@ -602,6 +647,7 @@ textEl.addEventListener('keydown', (e) => {
 textEl.addEventListener('input', () => {
   textEl.style.height = 'auto';
   textEl.style.height = Math.min(textEl.scrollHeight, 120) + 'px';
+  sendTyping();
 });
 
 // Базовый набор эмодзи (как в разделе "часто используемые" на iPhone) — не полный юникодный
