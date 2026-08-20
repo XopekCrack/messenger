@@ -197,10 +197,15 @@ function requireCapability(cap) {
 const insertMessage = db.prepare('INSERT INTO messages (from_id, room, to_id, text, files_json, created_at) VALUES (?, ?, ?, ?, ?, ?)');
 
 // История комнаты: по умолчанию (без фильтров) — последние 200; с since/until — диапазон дат; с q — поиск по тексту
+// before — курсор постраничной подгрузки (id сообщения, "строго раньше которого" искать): при первой
+// загрузке клиент шлёт BEFORE_ID_MAX (см. ниже), дальше — id самого старого уже полученного сообщения.
+// Если вернулась полная страница (HISTORY_PAGE_SIZE строк) — клиент считает, что дальше может быть
+// ещё, и предлагает "Показать ещё"/подгружает при прокрутке вверх; иначе это был последний кусок.
+const HISTORY_PAGE_SIZE = 200;
 const roomHistoryAll = db.prepare(`
   SELECT m.id, m.text, m.created_at, m.from_id, m.file_url, m.file_name, m.file_size, m.files_json, u.display_name AS from_user
   FROM messages m JOIN users u ON u.id = m.from_id
-  WHERE m.room = ? ORDER BY m.id DESC LIMIT 200
+  WHERE m.room = ? AND m.id < ? ORDER BY m.id DESC LIMIT ${HISTORY_PAGE_SIZE}
 `);
 const roomHistoryRange = db.prepare(`
   SELECT m.id, m.text, m.created_at, m.from_id, m.file_url, m.file_name, m.file_size, m.files_json, u.display_name AS from_user
@@ -210,7 +215,7 @@ const roomHistoryRange = db.prepare(`
 const roomHistorySearch = db.prepare(`
   SELECT m.id, m.text, m.created_at, m.from_id, m.file_url, m.file_name, m.file_size, m.files_json, u.display_name AS from_user
   FROM messages m JOIN users u ON u.id = m.from_id
-  WHERE m.room = ? AND lower_ru(m.text) LIKE '%' || lower_ru(?) || '%' ORDER BY m.id DESC LIMIT 200
+  WHERE m.room = ? AND m.id < ? AND lower_ru(m.text) LIKE '%' || lower_ru(?) || '%' ORDER BY m.id DESC LIMIT ${HISTORY_PAGE_SIZE}
 `);
 const roomHistoryDays = db.prepare(`
   SELECT strftime('%Y-%m-%d', datetime(m.created_at/1000, 'unixepoch', ?)) AS day, COUNT(*) AS count
@@ -220,8 +225,8 @@ const roomHistoryDays = db.prepare(`
 const dmHistoryAll = db.prepare(`
   SELECT m.id, m.text, m.created_at, m.from_id, m.to_id, m.read_at, m.file_url, m.file_name, m.file_size, m.files_json, u.display_name AS from_user
   FROM messages m JOIN users u ON u.id = m.from_id
-  WHERE (m.from_id = ? AND m.to_id = ?) OR (m.from_id = ? AND m.to_id = ?)
-  ORDER BY m.id DESC LIMIT 200
+  WHERE ((m.from_id = ? AND m.to_id = ?) OR (m.from_id = ? AND m.to_id = ?)) AND m.id < ?
+  ORDER BY m.id DESC LIMIT ${HISTORY_PAGE_SIZE}
 `);
 const dmHistoryRange = db.prepare(`
   SELECT m.id, m.text, m.created_at, m.from_id, m.to_id, m.read_at, m.file_url, m.file_name, m.file_size, m.files_json, u.display_name AS from_user
@@ -232,8 +237,8 @@ const dmHistoryRange = db.prepare(`
 const dmHistorySearch = db.prepare(`
   SELECT m.id, m.text, m.created_at, m.from_id, m.to_id, m.read_at, m.file_url, m.file_name, m.file_size, m.files_json, u.display_name AS from_user
   FROM messages m JOIN users u ON u.id = m.from_id
-  WHERE ((m.from_id = ? AND m.to_id = ?) OR (m.from_id = ? AND m.to_id = ?)) AND lower_ru(m.text) LIKE '%' || lower_ru(?) || '%'
-  ORDER BY m.id DESC LIMIT 200
+  WHERE ((m.from_id = ? AND m.to_id = ?) OR (m.from_id = ? AND m.to_id = ?)) AND m.id < ? AND lower_ru(m.text) LIKE '%' || lower_ru(?) || '%'
+  ORDER BY m.id DESC LIMIT ${HISTORY_PAGE_SIZE}
 `);
 // Отмечаем прочитанными сообщения ОТ peer КО мне (to_id = я), полученные не позже upTo — тем же
 // сигналом, что и разделитель "Новые сообщения" в чате (клик/скролл), а не просто открытием окна.
@@ -461,9 +466,10 @@ app.get('/api/departments', auth, (req, res) => {
 // во всей истории переписки (диапазон дат при этом игнорируется).
 app.get('/api/history/room/:room', auth, (req, res) => {
   const { since, until, q } = req.query;
-  if (q) return res.json(roomHistorySearch.all(req.params.room, q).reverse().map(normalizeRow));
+  const before = beforeId(req);
+  if (q) return res.json(roomHistorySearch.all(req.params.room, before, q).reverse().map(normalizeRow));
   if (since && until) return res.json(roomHistoryRange.all(req.params.room, Number(since), Number(until)).map(normalizeRow)); // уже ASC из SQL
-  res.json(roomHistoryAll.all(req.params.room).reverse().map(normalizeRow));
+  res.json(roomHistoryAll.all(req.params.room, before).reverse().map(normalizeRow));
 });
 // Группировка по дням учитывает часовой пояс КЛИЕНТА (?offsetMinutes= — минуты впереди UTC,
 // т.е. для UTC+3 это 180), а не сервера — так деление на дни всегда совпадает с тем, что человек
@@ -474,14 +480,23 @@ function tzModifier(req) {
   return `${sign}${Math.abs(minutes)} minutes`;
 }
 
+// Курсор постраничной подгрузки для ?before= (см. HISTORY_PAGE_SIZE выше) — без параметра (первая
+// страница) берём заведомо больше любого реального id сообщения.
+const BEFORE_ID_MAX = Number.MAX_SAFE_INTEGER;
+function beforeId(req) {
+  const b = Number(req.query.before);
+  return Number.isFinite(b) && b > 0 ? b : BEFORE_ID_MAX;
+}
+
 app.get('/api/history/room/:room/days', auth, (req, res) => res.json(roomHistoryDays.all(tzModifier(req), req.params.room)));
 
 app.get('/api/history/dm/:userId', auth, (req, res) => {
   const other = Number(req.params.userId);
   const { since, until, q } = req.query;
-  if (q) return res.json(dmHistorySearch.all(req.user.id, other, other, req.user.id, q).reverse().map(normalizeRow));
+  const before = beforeId(req);
+  if (q) return res.json(dmHistorySearch.all(req.user.id, other, other, req.user.id, before, q).reverse().map(normalizeRow));
   if (since && until) return res.json(dmHistoryRange.all(req.user.id, other, other, req.user.id, Number(since), Number(until)).map(normalizeRow)); // уже ASC из SQL
-  res.json(dmHistoryAll.all(req.user.id, other, other, req.user.id).reverse().map(normalizeRow));
+  res.json(dmHistoryAll.all(req.user.id, other, other, req.user.id, before).reverse().map(normalizeRow));
 });
 app.get('/api/history/dm/:userId/days', auth, (req, res) => {
   const other = Number(req.params.userId);
@@ -697,11 +712,11 @@ app.delete('/api/admin/files/:diskName', auth, requireCapability('can_admin'), (
 
 // Админ может открыть историю любого чата
 app.get('/api/admin/history/room/:room', auth, requireCapability('can_admin'), (req, res) => {
-  res.json(roomHistoryAll.all(req.params.room).reverse().map(normalizeRow));
+  res.json(roomHistoryAll.all(req.params.room, beforeId(req)).reverse().map(normalizeRow));
 });
 app.get('/api/admin/history/dm/:u1/:u2', auth, requireCapability('can_admin'), (req, res) => {
   const a = Number(req.params.u1), b = Number(req.params.u2);
-  res.json(dmHistoryAll.all(a, b, b, a).reverse().map(normalizeRow));
+  res.json(dmHistoryAll.all(a, b, b, a, beforeId(req)).reverse().map(normalizeRow));
 });
 
 app.get('/api/admin/stats', auth, requireCapability('can_admin'), (req, res) => {

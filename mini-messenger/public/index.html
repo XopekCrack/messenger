@@ -175,6 +175,9 @@
           <button class="action ghost" onclick="exportHistory()">Экспорт в .txt</button>
         </div>
         <div id="histMessages"></div>
+        <div class="row-flex" id="histMoreRow" style="display:none; margin-top:8px;">
+          <button class="action ghost" onclick="loadMoreHistory()" id="histMoreBtn">Показать более ранние</button>
+        </div>
       </div>
     </div>
 
@@ -216,7 +219,10 @@
 let token = localStorage.getItem('admin_token');
 let me = JSON.parse(localStorage.getItem('admin_me') || 'null');
 let usersCache = [], deptsCache = [];
-let lastHistory = { type: 'room', items: [] };
+// path/oldestId/hasMore — курсор постраничной подгрузки (см. loadMoreHistory): admin/history/*
+// в server.js режет ответ по HISTORY_PAGE_SIZE (200) — в старом активном диалоге этого может не
+// хватить, дальше 200 сообщений назад без подгрузки было не прокрутить.
+let lastHistory = { type: 'room', path: null, items: [], oldestId: null, hasMore: false };
 
 async function api(path, opts) {
   const res = await fetch(path, {
@@ -393,26 +399,56 @@ document.getElementById('histType').onchange = (e) => {
 
 function escapeHtml(s) { return s.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
 
+function renderHistoryBox(items) {
+  document.getElementById('histMessages').innerHTML = items.map(m => {
+    const time = new Date(m.created_at).toLocaleString('ru-RU');
+    const files = (m.files || []).map(f => ` 📎 ${escapeHtml(f.name)}${f.exists === false ? ' (удалён с диска)' : ''}`).join('');
+    return `<div class="m"><b>${m.from_user}:</b> ${escapeHtml(m.text)}${files}<span class="t">${time}</span></div>`;
+  }).join('') || 'Сообщений пока нет';
+}
+
 async function loadHistory() {
   const type = document.getElementById('histType').value;
   const box = document.getElementById('histMessages');
   box.innerHTML = 'Загрузка...';
+  document.getElementById('histMoreRow').style.display = 'none';
   try {
-    let items;
+    let path;
     if (type === 'room') {
-      items = await api('/api/admin/history/room/general');
+      path = '/api/admin/history/room/general';
     } else {
       const u1 = document.getElementById('histUser1').value, u2 = document.getElementById('histUser2').value;
       if (!u1 || !u2 || u1 === u2) { box.innerHTML = 'Выберите двух разных сотрудников'; return; }
-      items = await api(`/api/admin/history/dm/${u1}/${u2}`);
+      path = `/api/admin/history/dm/${u1}/${u2}`;
     }
-    lastHistory = { type, items };
-    box.innerHTML = items.map(m => {
-      const time = new Date(m.created_at).toLocaleString('ru-RU');
-      const files = (m.files || []).map(f => ` 📎 ${escapeHtml(f.name)}${f.exists === false ? ' (удалён с диска)' : ''}`).join('');
-      return `<div class="m"><b>${m.from_user}:</b> ${escapeHtml(m.text)}${files}<span class="t">${time}</span></div>`;
-    }).join('') || 'Сообщений пока нет';
+    const items = await api(path);
+    lastHistory = { type, path, items, oldestId: items.length ? items[0].id : null, hasMore: items.length === 200 };
+    renderHistoryBox(items);
+    document.getElementById('histMoreRow').style.display = lastHistory.hasMore ? 'flex' : 'none';
   } catch (e) { box.innerHTML = 'Ошибка: ' + e.message; }
+}
+
+async function loadMoreHistory() {
+  if (!lastHistory.hasMore || !lastHistory.path) return;
+  const btn = document.getElementById('histMoreBtn');
+  const box = document.getElementById('histMessages');
+  btn.disabled = true;
+  btn.textContent = 'Загрузка...';
+  try {
+    const items = await api(`${lastHistory.path}?before=${lastHistory.oldestId}`);
+    lastHistory.hasMore = items.length === 200;
+    if (items.length) {
+      lastHistory.oldestId = items[0].id;
+      lastHistory.items = [...items, ...lastHistory.items];
+      const prevHeight = box.scrollHeight, prevTop = box.scrollTop;
+      renderHistoryBox(lastHistory.items);
+      box.scrollTop = box.scrollHeight - prevHeight + prevTop; // не сбрасываем позицию просмотра вставкой сверху
+    }
+    document.getElementById('histMoreRow').style.display = lastHistory.hasMore ? 'flex' : 'none';
+  } catch (e) { alert(e.message); } finally {
+    btn.disabled = false;
+    btn.textContent = 'Показать более ранние';
+  }
 }
 
 function exportHistory() {

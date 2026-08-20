@@ -882,9 +882,17 @@ async function loadDays() {
   });
 }
 
+// Подгрузка более старых результатов поиска при прокрутке вверх (см. hpState/scroll ниже). День
+// (selectDay) не листается постранично — сервер отдаёт день целиком без ограничения LIMIT, там
+// нечего подгружать. А вот поиск (roomHistorySearch/dmHistorySearch в server.js) режется по
+// HISTORY_PAGE_SIZE (200) — в старом активном диалоге по частому слову легко упереться в этот
+// потолок и не увидеть более ранние совпадения без подгрузки.
+let hpState = { query: null, oldestId: null, hasMore: false, loading: false };
+
 async function selectDay(day) {
   document.getElementById('hpSearch').value = '';
   [...document.querySelectorAll('#hpDays .dbtn')].forEach(b => b.classList.toggle('active', b.dataset.day === day));
+  hpState = { query: null, oldestId: null, hasMore: false, loading: false };
   const { since, until } = dayRange(day);
   const q = `since=${since}&until=${until}`;
   const items = type === 'room' ? await api(`/api/history/room/${id}?${q}`) : await api(`/api/history/dm/${id}?${q}`);
@@ -900,10 +908,16 @@ function debounceSearch(e) {
 }
 async function runSearch(text) {
   [...document.querySelectorAll('#hpDays .dbtn')].forEach(b => b.classList.remove('active'));
+  hpState = { query: text, oldestId: null, hasMore: false, loading: false };
   const items = type === 'room'
     ? await api(`/api/history/room/${id}?q=${encodeURIComponent(text)}`)
     : await api(`/api/history/dm/${id}?q=${encodeURIComponent(text)}`);
+  applySearchPage(items);
   renderHistoryMessages(items, true, text);
+}
+function applySearchPage(items) {
+  hpState.hasMore = items.length === 200; // HISTORY_PAGE_SIZE на сервере — полная страница значит, скорее всего, есть ещё
+  if (items.length) hpState.oldestId = items[0].id; // items уже в хронологическом порядке (самое старое — первое)
 }
 
 function renderHistoryMessages(items, withDate, query) {
@@ -912,6 +926,28 @@ function renderHistoryMessages(items, withDate, query) {
   box.innerHTML = items.map(m => bubbleHtml(m, { withDate, query })).join('');
   box.scrollTop = box.scrollHeight; // сразу к самым свежим сообщениям за день, а не к началу
 }
+
+// Прокрутка почти до самого верха ленты поиска — подгружаем более старую страницу совпадений и
+// вставляем её сверху, сохраняя видимую позицию (иначе вставка сверху дёргала бы ленту вниз).
+document.getElementById('hpMessages').addEventListener('scroll', async (e) => {
+  const box = e.target;
+  if (box.scrollTop > 40 || !hpState.hasMore || hpState.loading || !hpState.query) return;
+  const state = hpState; // снимок — если пока грузится страница, пользователь переключится на другой
+  state.loading = true;  // день/поиск (selectDay/runSearch создают НОВЫЙ hpState), применяем результат
+  const prevHeight = box.scrollHeight; // только к тому состоянию, для которого его реально запросили
+  const items = type === 'room'
+    ? await api(`/api/history/room/${id}?q=${encodeURIComponent(state.query)}&before=${state.oldestId}`)
+    : await api(`/api/history/dm/${id}?q=${encodeURIComponent(state.query)}&before=${state.oldestId}`);
+  if (state !== hpState) return; // состояние уже сменилось — эта страница больше не актуальна
+  applySearchPage(items);
+  if (items.length) {
+    const frag = document.createElement('div');
+    frag.innerHTML = items.map(m => bubbleHtml(m, { withDate: true, query: state.query })).join('');
+    while (frag.firstChild) box.insertBefore(frag.firstChild, box.firstChild);
+    box.scrollTop = box.scrollHeight - prevHeight + box.scrollTop;
+  }
+  state.loading = false;
+});
 
 // Клик по прикреплённому файлу — скачивание через главный процесс (webContents.downloadURL),
 // а не обычная навигация по ссылке: раньше здесь стоял target="_blank", из-за чего Electron
