@@ -349,6 +349,7 @@ async function api(path, opts) {
 }
 
 let wsLostTimer = null; // см. showConnectionLostModal в ui-kit.js
+let wsReconnectDelay = 2000; // экспоненциальный бэкофф между попытками (см. onclose ниже)
 function connectWs() {
   const wsUrl = serverUrl.replace(/^http/, 'ws');
   ws = new WebSocket(`${wsUrl}?token=${token}&host=${encodeURIComponent(desktop.hostname)}`);
@@ -358,6 +359,7 @@ function connectWs() {
   ws.onopen = async () => {
     clearTimeout(wsLostTimer);
     wsLostTimer = null;
+    wsReconnectDelay = 2000;
     hideConnectionLostModal();
     const { state } = await desktop.getIdleState();
     ws.send(JSON.stringify({ type: 'status', state }));
@@ -391,7 +393,10 @@ function connectWs() {
     // провалы просто бесконечно откладывали бы показ диалога. Ставим один раз на первый обрыв и
     // ждём (5с), пока какая-нибудь попытка не удастся; удачное onopen выше сам его отменяет.
     if (!wsLostTimer) wsLostTimer = setTimeout(() => { wsLostTimer = null; showConnectionLostModal(connectWs); }, 5000);
-    setTimeout(connectWs, 2000);
+    // Бэкофф: 2с → ×1.5 после каждой неудачи, потолок 30с — при обрыве сети на несколько часов
+    // это фоновые редкие попытки, а не спам раз в 2 секунды. Успешное onopen сбрасывает задержку.
+    setTimeout(connectWs, wsReconnectDelay);
+    wsReconnectDelay = Math.min(wsReconnectDelay * 1.5, 30000);
   };
 }
 

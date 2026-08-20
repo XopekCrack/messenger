@@ -90,6 +90,10 @@ db.exec(`
   const cols = db.prepare("PRAGMA table_info(users)").all().map((c) => c.name);
   if (!cols.includes('can_broadcast')) db.exec('ALTER TABLE users ADD COLUMN can_broadcast INTEGER NOT NULL DEFAULT 0');
   if (!cols.includes('can_admin')) db.exec('ALTER TABLE users ADD COLUMN can_admin INTEGER NOT NULL DEFAULT 0');
+  // Счётчик версии строки — для оптимистичной блокировки при редактировании в админ-панели (см.
+  // PATCH /api/admin/users/:id): если два администратора одновременно открыли карточку одного и
+  // того же человека, второй сохранённый PATCH не должен молча затирать правки первого.
+  if (!cols.includes('version')) db.exec('ALTER TABLE users ADD COLUMN version INTEGER NOT NULL DEFAULT 0');
 }
 {
   // can_broadcast/can_admin у отделов больше не используются (раньше отдел мог выдавать права всем
@@ -159,7 +163,7 @@ const getUserByName = db.prepare('SELECT * FROM users WHERE username = ?');
 const getUserById = db.prepare('SELECT id, username, display_name, department_id, can_broadcast, can_admin FROM users WHERE id = ?');
 const countUsers = db.prepare('SELECT COUNT(*) AS c FROM users');
 const listUsersFull = db.prepare(`
-  SELECT u.id, u.username, u.display_name, u.department_id, u.can_broadcast, u.can_admin, d.name AS department
+  SELECT u.id, u.username, u.display_name, u.department_id, u.can_broadcast, u.can_admin, u.version, d.name AS department
   FROM users u LEFT JOIN departments d ON d.id = u.department_id
   ORDER BY u.display_name
 `);
@@ -172,6 +176,7 @@ const updateUserCaps = db.prepare('UPDATE users SET can_broadcast = ?, can_admin
 const updateUserDept = db.prepare('UPDATE users SET department_id = ? WHERE id = ?');
 const updateUserPassword = db.prepare('UPDATE users SET password_hash = ? WHERE id = ?');
 const updateDisplayName = db.prepare('UPDATE users SET display_name = ? WHERE id = ?');
+const bumpUserVersion = db.prepare('UPDATE users SET version = version + 1 WHERE id = ?');
 const deleteUserStmt = db.prepare('DELETE FROM users WHERE id = ?');
 
 const listDepartments = db.prepare('SELECT * FROM departments ORDER BY sort_order, id');
@@ -332,7 +337,63 @@ app.get('/uploads/:diskName', (req, res) => {
   res.download(filePath, displayName);
 });
 
-app.post('/api/register', (req, res) => {
+// ---------- Rate-limiting против перебора паролей ----------
+// Два независимых счётчика, оба — простые in-memory Map с ленивым протуханием (для 20-200 человек
+// в локальной сети выделенный npm-пакет вроде express-rate-limit избыточен):
+//  1) ipAttempts — общий поток запросов с одного IP на /api/login и /api/register (защита от
+//     заливки запросами вообще, не только подбора пароля к конкретному логину);
+//  2) loginFails — счётчик подряд неверных паролей для КОНКРЕТНОГО логина: после нескольких
+//     промахов аккаунт временно блокируется, независимо от того, с какого IP или через сколько
+//     разных IP идёт перебор.
+const ipAttempts = new Map(); // ip -> { count, resetAt }
+function ipRateLimit({ windowMs, max }) {
+  return (req, res, next) => {
+    const now = Date.now();
+    let entry = ipAttempts.get(req.ip);
+    if (!entry || entry.resetAt < now) {
+      entry = { count: 0, resetAt: now + windowMs };
+      ipAttempts.set(req.ip, entry);
+    }
+    entry.count += 1;
+    if (entry.count > max) {
+      return res.status(429).json({ error: 'Слишком много попыток с этого адреса, попробуйте позже' });
+    }
+    next();
+  };
+}
+
+const LOGIN_FAIL_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_FAILS = 5;
+const LOGIN_LOCK_MS = 5 * 60 * 1000;
+const loginFails = new Map(); // username (lower) -> { count, windowStart, lockedUntil }
+function checkLoginLock(username) {
+  const entry = loginFails.get(String(username || '').toLowerCase());
+  if (entry && entry.lockedUntil > Date.now()) return Math.ceil((entry.lockedUntil - Date.now()) / 1000);
+  return 0;
+}
+function registerLoginFail(username) {
+  const key = String(username || '').toLowerCase();
+  const now = Date.now();
+  let entry = loginFails.get(key);
+  if (!entry || now - entry.windowStart > LOGIN_FAIL_WINDOW_MS) entry = { count: 0, windowStart: now, lockedUntil: 0 };
+  entry.count += 1;
+  if (entry.count >= LOGIN_MAX_FAILS) entry.lockedUntil = now + LOGIN_LOCK_MS;
+  loginFails.set(key, entry);
+}
+function clearLoginFails(username) {
+  loginFails.delete(String(username || '').toLowerCase());
+}
+// Периодическая уборка протухших записей, чтобы обе Map не росли бесконечно.
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of ipAttempts) if (v.resetAt < now) ipAttempts.delete(k);
+  for (const [k, v] of loginFails) {
+    const stale = v.lockedUntil ? v.lockedUntil < now : now - v.windowStart > LOGIN_FAIL_WINDOW_MS;
+    if (stale) loginFails.delete(k);
+  }
+}, 10 * 60 * 1000).unref();
+
+app.post('/api/register', ipRateLimit({ windowMs: 60 * 60 * 1000, max: 10 }), (req, res) => {
   const { username, password } = req.body || {};
   if (!username || !password || password.length < 4) {
     return res.status(400).json({ error: 'Логин и пароль (мин. 4 символа) обязательны' });
@@ -351,12 +412,18 @@ app.post('/api/register', (req, res) => {
   }
 });
 
-app.post('/api/login', (req, res) => {
+app.post('/api/login', ipRateLimit({ windowMs: 10 * 60 * 1000, max: 30 }), (req, res) => {
   const { username, password } = req.body || {};
+  const lockedSec = checkLoginLock(username);
+  if (lockedSec) {
+    return res.status(429).json({ error: `Слишком много неверных попыток входа, повторите через ${lockedSec} сек.` });
+  }
   const user = getUserByName.get(username);
   if (!user || !bcrypt.compareSync(password || '', user.password_hash)) {
+    registerLoginFail(username);
     return res.status(401).json({ error: 'Неверный логин или пароль' });
   }
+  clearLoginFails(username);
   const token = jwt.sign({ id: user.id }, SECRET, { expiresIn: '30d' });
   res.json({ token, user: getUserById.get(user.id) });
 });
@@ -464,10 +531,16 @@ app.post('/api/admin/users', auth, requireCapability('can_admin'), (req, res) =>
 
 app.patch('/api/admin/users/:id', auth, requireCapability('can_admin'), (req, res) => {
   const id = Number(req.params.id);
-  const { department_id, password, display_name, can_broadcast, can_admin } = req.body || {};
+  const { department_id, password, display_name, can_broadcast, can_admin, version } = req.body || {};
+  const current = db.prepare('SELECT can_broadcast, can_admin, version FROM users WHERE id = ?').get(id);
+  if (!current) return res.status(404).json({ error: 'Пользователь не найден' });
+  // Оптимистичная блокировка: панель присылает версию строки, которую видела при загрузке. Если она
+  // разошлась с текущей — правки внёс кто-то другой (второй администратор) уже после этого, и молча
+  // затирать их нельзя. При 20-200 сотрудниках такая гонка редкая, но раз возможна — проверяем.
+  if (version !== undefined && Number(version) !== current.version) {
+    return res.status(409).json({ error: 'Пользователя уже изменил другой администратор — обновите страницу и повторите' });
+  }
   if (can_broadcast !== undefined || can_admin !== undefined) {
-    const current = db.prepare('SELECT can_broadcast, can_admin FROM users WHERE id = ?').get(id);
-    if (!current) return res.status(404).json({ error: 'Пользователь не найден' });
     updateUserCaps.run(
       can_broadcast !== undefined ? (can_broadcast ? 1 : 0) : current.can_broadcast,
       can_admin !== undefined ? (can_admin ? 1 : 0) : current.can_admin,
@@ -484,8 +557,9 @@ app.patch('/api/admin/users/:id', auth, requireCapability('can_admin'), (req, re
     if (!clean) return res.status(400).json({ error: 'Имя не может быть пустым' });
     updateDisplayName.run(clean.slice(0, 60), id);
   }
+  bumpUserVersion.run(id);
   broadcastUsersChanged();
-  res.json({ ok: true });
+  res.json({ ok: true, version: current.version + 1 });
 });
 
 app.delete('/api/admin/users/:id', auth, requireCapability('can_admin'), (req, res) => {

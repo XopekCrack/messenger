@@ -295,13 +295,16 @@ function renderUsers() {
     body.appendChild(tr);
   });
 }
+function userVersion(id) { return usersCache.find(u => u.id === id)?.version; }
+function applyUserVersion(id, version) { const u = usersCache.find(x => x.id === id); if (u && version !== undefined) u.version = version; }
+
 async function renameUser(id) {
   const val = document.getElementById(`dn-${id}`).value.trim();
   if (!val) return alert('Имя не может быть пустым');
-  try { await api(`/api/admin/users/${id}`, { method: 'PATCH', body: JSON.stringify({ display_name: val }) }); refreshAll(); } catch (e) { alert(e.message); }
+  try { await api(`/api/admin/users/${id}`, { method: 'PATCH', body: JSON.stringify({ display_name: val, version: userVersion(id) }) }); refreshAll(); } catch (e) { alert(e.message); refreshAll(); }
 }
 async function toggleUserCap(id, cap, checked) {
-  try { await api(`/api/admin/users/${id}`, { method: 'PATCH', body: JSON.stringify({ [cap]: checked }) }); } catch (e) { alert(e.message); refreshAll(); }
+  try { const r = await api(`/api/admin/users/${id}`, { method: 'PATCH', body: JSON.stringify({ [cap]: checked, version: userVersion(id) }) }); applyUserVersion(id, r.version); } catch (e) { alert(e.message); refreshAll(); }
 }
 
 function renderDepts() {
@@ -362,11 +365,11 @@ async function createUser() {
     refreshAll();
   } catch (e) { alert(e.message); }
 }
-async function changeDept(id, department_id) { try { await api(`/api/admin/users/${id}`, { method: 'PATCH', body: JSON.stringify({ department_id: department_id || null }) }); } catch (e) { alert(e.message); } }
+async function changeDept(id, department_id) { try { const r = await api(`/api/admin/users/${id}`, { method: 'PATCH', body: JSON.stringify({ department_id: department_id || null, version: userVersion(id) }) }); applyUserVersion(id, r.version); } catch (e) { alert(e.message); refreshAll(); } }
 async function resetPassword(id) {
   const val = document.getElementById(`pw-${id}`).value;
   if (!val) return;
-  try { await api(`/api/admin/users/${id}`, { method: 'PATCH', body: JSON.stringify({ password: val }) }); alert('Пароль обновлён'); } catch (e) { alert(e.message); }
+  try { await api(`/api/admin/users/${id}`, { method: 'PATCH', body: JSON.stringify({ password: val, version: userVersion(id) }) }); alert('Пароль обновлён'); refreshAll(); } catch (e) { alert(e.message); refreshAll(); }
 }
 async function deleteUser(id) {
   if (!confirm('Удалить пользователя без возможности восстановления?')) return;
