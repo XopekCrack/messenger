@@ -15,7 +15,9 @@
   /* ---- Логин ---- */
   #auth { flex: 1; display: flex; flex-direction: column; justify-content: center; padding: 26px; gap: 8px; }
   #authForm { display: flex; flex-direction: column; gap: 8px; }
-  #auth h1 { font-size: 16px; margin: 0 0 16px; text-align: center; font-weight: 700; }
+  #authLogo { display: block; height: 110px; width: auto; margin: 0 auto 12px; }
+  #auth h1 { font-size: 22px; margin: 0 0 4px; text-align: center; font-weight: 800; letter-spacing: .3px; }
+  #auth .auth-subtitle { font-size: 12px; margin: 0 0 16px; text-align: center; color: var(--muted); }
   #auth input { -webkit-app-region: no-drag; width: 100%; padding: 10px 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 9px; color: var(--text); font-size: 13px; }
   #auth input:focus { outline: none; border-color: var(--accent); }
   #auth button.primary { -webkit-app-region: no-drag; margin-top: 8px; padding: 11px; border: none; border-radius: 9px; background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #fff; font-weight: 700; cursor: pointer; font-size: 13px; }
@@ -184,7 +186,9 @@
 </div>
 
 <div id="auth">
-  <h1>Вход в мессенджер</h1>
+  <svg id="authLogo" viewBox="74 16 52 110" fill="var(--text)"><path d="M98.09 95.38 L98.87 90.06 L100.00 20.00 L101.13 90.06 L101.91 95.38 L103.61 95.21 L109.19 90.81 L104.79 96.39 L104.62 98.09 L109.90 98.61 L122.00 100.00 L109.90 101.39 L104.62 101.91 L104.79 103.61 L109.19 109.19 L103.61 104.79 L101.91 104.62 L101.39 109.90 L100.00 122.00 L98.61 109.90 L98.09 104.62 L96.39 104.79 L90.81 109.19 L95.21 103.61 L95.38 101.91 L90.10 101.39 L78.00 100.00 L90.10 98.61 L95.38 98.09 L95.21 96.39 L90.81 90.81 L96.39 95.21 Z"/></svg>
+  <h1>Искра</h1>
+  <div class="auth-subtitle">Корпоративный мессенджер Липецкстата</div>
   <div class="err" id="authErr"></div>
   <form id="authForm" onsubmit="event.preventDefault(); doAuth();">
     <input id="username" placeholder="Логин">
