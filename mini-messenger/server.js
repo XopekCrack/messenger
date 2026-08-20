@@ -375,7 +375,28 @@ const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir);
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 
-app.post('/api/upload', auth, express.raw({ limit: '50mb', type: () => true }), (req, res) => {
+// Расширения, которые Windows исполняет одним двойным кликом (или через известный интерпретатор,
+// как .ps1/.vbs/.js) — блокируем при загрузке. Для организационного мессенджера риск, что кто-то
+// по ошибке (или обманом) запустит присланный "документ.exe", перевешивает удобство прислать
+// исполняемый файл напрямую в переписке — для этого остаётся архив через другой канал.
+const BLOCKED_UPLOAD_EXTENSIONS = new Set([
+  'exe', 'bat', 'cmd', 'com', 'scr', 'msi', 'msp', 'msc',
+  'ps1', 'ps1xml', 'psc1', 'psd1', 'psm1',
+  'vbs', 'vbe', 'js', 'jse', 'wsf', 'wsh', 'hta', 'cpl', 'reg', 'lnk', 'inf', 'gadget', 'application', 'jar',
+]);
+function isBlockedUploadName(name) {
+  const ext = String(name).split('.').pop().toLowerCase();
+  return BLOCKED_UPLOAD_EXTENSIONS.has(ext);
+}
+
+app.post('/api/upload', auth, (req, res, next) => {
+  // Проверяем тип ДО чтения тела запроса (имя файла уже известно из query-параметра) — так
+  // запрещённый файл не занимает лишний трафик и не оседает в памяти сервера зря.
+  if (isBlockedUploadName(String(req.query.name || ''))) {
+    return res.status(415).json({ error: 'Такой тип файла запрещён к отправке (исполняемые/скриптовые файлы)' });
+  }
+  next();
+}, express.raw({ limit: '50mb', type: () => true }), (req, res) => {
   const originalName = String(req.query.name || 'file').replace(/[\\/:*?"<>|]/g, '_').slice(0, 150);
   const safeName = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}-${originalName}`;
   if (!req.body || !req.body.length) return res.status(400).json({ error: 'Пустой файл' });
@@ -389,13 +410,27 @@ app.use('/api/upload', (err, req, res, next) => {
   next();
 });
 
-// Скачивание: требует токен (?token=...), т.к. обычная ссылка не может передать заголовок
-// Authorization. На диске файл лежит под "грязным" именем (метка времени + случайный хеш —
-// нужно для исключения коллизий и path traversal), поэтому явно задаём оригинальное имя через
-// Content-Disposition — иначе при сохранении подставлялось бы страшное техническое имя файла.
-// Клиент передаёт оригинальное имя параметром ?name=, зная его из истории переписки.
+// Короткоживущий токен на скачивание ОДНОГО конкретного файла — раньше в ?token= подставляли
+// основной 30-дневный сессионный JWT, потому что обычная ссылка не может передать заголовок
+// Authorization. Проблема: URL с этим токеном оседает в логах сервера/прокси (по умолчанию логируют
+// query string), и утечка такого лога на весь этот срок равносильна утечке пароля. Токен здесь
+// привязан к конкретному diskName (purpose:'download') и живёт минуту — этого достаточно, чтобы
+// начать скачивание, а сама передача байтов уже не зависит от валидности токена.
+app.get('/api/download-token', auth, (req, res) => {
+  const diskName = String(req.query.path || '').split('/').pop();
+  if (!diskName) return res.status(400).json({ error: 'Не указан файл' });
+  const token = jwt.sign({ purpose: 'download', diskName }, SECRET, { expiresIn: '60s' });
+  res.json({ token });
+});
+
+// На диске файл лежит под "грязным" именем (метка времени + случайный хеш — нужно для исключения
+// коллизий и path traversal), поэтому явно задаём оригинальное имя через Content-Disposition —
+// иначе при сохранении подставлялось бы страшное техническое имя файла. Клиент передаёт оригинальное
+// имя параметром ?name=, зная его из истории переписки.
 app.get('/uploads/:diskName', (req, res) => {
-  try { jwt.verify(req.query.token, SECRET); } catch { return res.sendStatus(401); }
+  let payload;
+  try { payload = jwt.verify(req.query.token, SECRET); } catch { return res.sendStatus(401); }
+  if (payload.purpose !== 'download' || payload.diskName !== req.params.diskName) return res.sendStatus(401);
   const filePath = path.join(uploadsDir, req.params.diskName);
   if (!filePath.startsWith(uploadsDir) || !fs.existsSync(filePath)) return res.sendStatus(404);
   const displayName = req.query.name ? String(req.query.name).slice(0, 260) : req.params.diskName;

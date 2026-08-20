@@ -488,8 +488,10 @@ function bubbleHtml(m, { withDate, query } = {}) {
       if (f.exists === false) {
         return `<div class="file file-deleted"><span class="fi">${uiIcon('warn')}</span><span class="fmeta"><span class="fn">${escapeHtml(f.name || 'файл')}</span><span class="fs">Файл удалён с сервера</span></span></div>`;
       }
-      const href = `${serverUrl}${f.url}?token=${token}&name=${encodeURIComponent(f.name || 'файл')}`;
-      return `<a class="file" href="${href}" data-name="${escapeAttr(f.name || 'файл')}"><span class="fi"><span class="fi-file">${uiIcon('file')}</span><span class="fi-download">${uiIcon('download')}</span><span class="fi-progress"><svg viewBox="0 0 24 24"><circle class="ring-bg" cx="12" cy="12" r="10"></circle><circle class="ring-bar" cx="12" cy="12" r="10"></circle></svg><span class="fi-pct"></span></span><span class="fi-check">${uiIcon('check')}</span></span><span class="fmeta"><span class="fn">${escapeHtml(f.name || 'файл')}</span><span class="fs">${fmtSize(f.size)}</span></span></a>`;
+      // Без токена в href — короткоживущий токен на скачивание запрашивается прямо перед кликом
+      // (см. wireFileClicks/wireMessageContextMenu), а не подставляется здесь заранее: ссылка может
+      // провисеть в DOM часами, и токен на момент клика уже истёк бы.
+      return `<a class="file" href="#" data-url="${escapeAttr(f.url)}" data-name="${escapeAttr(f.name || 'файл')}"><span class="fi"><span class="fi-file">${uiIcon('file')}</span><span class="fi-download">${uiIcon('download')}</span><span class="fi-progress"><svg viewBox="0 0 24 24"><circle class="ring-bg" cx="12" cy="12" r="10"></circle><circle class="ring-bar" cx="12" cy="12" r="10"></circle></svg><span class="fi-pct"></span></span><span class="fi-check">${uiIcon('check')}</span></span><span class="fmeta"><span class="fn">${escapeHtml(f.name || 'файл')}</span><span class="fs">${fmtSize(f.size)}</span></span></a>`;
     }).join('');
     body += `<div class="files-block">${cards}</div><div class="files-time">${stamp}${tick}</div>`;
   }
@@ -1215,13 +1217,27 @@ desktop.onDownloadProgress(({ id, state, percent }) => {
 
 desktop.onToast(({ message, error }) => chatToast(message, { error }));
 
+// Короткоживущий (60с) токен на скачивание конкретного файла — запрашивается прямо перед тем, как
+// он понадобится (клик/ПКМ), а не подставляется в ссылку заранее: карточка файла может пролежать
+// в открытом окне часами, а токен в её href к этому моменту уже истёк бы (см. /api/download-token
+// в server.js — там же объяснение, зачем это вообще нужно вместо основного сессионного токена).
+async function getDownloadUrl(relUrl, name) {
+  const { token: dlToken } = await api(`/api/download-token?path=${encodeURIComponent(relUrl)}`);
+  return `${serverUrl}${relUrl}?token=${dlToken}&name=${encodeURIComponent(name || 'файл')}`;
+}
+
 function wireFileClicks(container) {
-  container.addEventListener('click', (e) => {
+  container.addEventListener('click', async (e) => {
     const link = e.target.closest('a.file');
     if (!link) return;
     e.preventDefault();
     const id = startDownloadUi(link);
-    desktop.downloadFile(link.href, id);
+    try {
+      const url = await getDownloadUrl(link.dataset.url, link.dataset.name);
+      desktop.downloadFile(url, id);
+    } catch {
+      chatToast('Не удалось начать скачивание — проверьте подключение.', { error: true });
+    }
   });
 }
 wireFileClicks(document.getElementById('messages'));
@@ -1231,11 +1247,16 @@ wireFileClicks(document.getElementById('hpMessages'));
 // Реализовано нативным меню Electron (через главный процесс), т.к. буфер обмена и системный
 // диалог "Сохранить как" всё равно должны идти оттуда.
 function wireMessageContextMenu(container) {
-  container.addEventListener('contextmenu', (e) => {
+  container.addEventListener('contextmenu', async (e) => {
     const fileLink = e.target.closest('a.file');
     if (fileLink) {
       e.preventDefault();
-      desktop.showMessageMenu({ kind: 'file', url: fileLink.href, name: fileLink.dataset.name });
+      try {
+        const url = await getDownloadUrl(fileLink.dataset.url, fileLink.dataset.name);
+        desktop.showMessageMenu({ kind: 'file', url, name: fileLink.dataset.name });
+      } catch {
+        chatToast('Не удалось подготовить файл — проверьте подключение.', { error: true });
+      }
       return;
     }
     const txtEl = e.target.closest('.txt');
