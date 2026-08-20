@@ -194,6 +194,7 @@ const params = new URLSearchParams(location.search);
 const token = params.get('token');
 const serverUrl = params.get('serverUrl');
 const me = JSON.parse(params.get('me') || 'null');
+installErrorReporting(serverUrl, token, 'broadcast'); // см. ui-kit.js
 // Право на рассылки может быть выдано лично человеку ИЛИ всему его отделу — сервер уже считает
 // итоговое (эффективное) значение и отдаёт его прямо в /api/me, отдельно спрашивать не нужно.
 let canCompose = false;

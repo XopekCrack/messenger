@@ -264,4 +264,35 @@
       img.outerHTML = img.alt;
     }
   }, true);
+
+  // ---------- Отправка ошибок клиента на сервер ----------
+  // token/serverUrl объявлены отдельным <script> на каждой странице (roster.html/chat.html/
+  // broadcast.html) ПОСЛЕ подключения этого файла — как const верхнего уровня они не становятся
+  // свойствами window, поэтому сюда их передают явно, а не читают напрямую. Вызывается один раз на
+  // странице, сразу как только token/serverUrl уже объявлены (см. вызовы в конце каждого файла).
+  // Цель — чтобы ошибку на чьём-то рабочем месте можно было разобрать по логам НА СЕРВЕРЕ (см.
+  // POST /api/client-log в server.js), а не просить сотрудника прислать скриншот или лезть к нему
+  // на ПК за локальным логом.
+  window.installErrorReporting = (serverUrl, token, source) => {
+    function report(kind, message, extra) {
+      if (!serverUrl || !token) return;
+      fetch(serverUrl + '/api/client-log', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          kind, source,
+          message: String(message == null ? 'Error' : message).slice(0, 2000),
+          extra,
+          hostname: window.desktop ? window.desktop.hostname : undefined,
+        }),
+      }).catch(() => {}); // сервер недоступен — теряем эту запись, не ретраим бесконечно ради лога об ошибке
+    }
+    window.addEventListener('error', (e) => {
+      report('window-error', e.message, { filename: e.filename, lineno: e.lineno, stack: e.error && e.error.stack });
+    });
+    window.addEventListener('unhandledrejection', (e) => {
+      const reason = e.reason;
+      report('unhandled-rejection', reason && reason.message ? reason.message : String(reason), { stack: reason && reason.stack });
+    });
+  };
 })();

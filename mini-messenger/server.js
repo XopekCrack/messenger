@@ -20,6 +20,41 @@ const SECRET = process.env.JWT_SECRET || 'change-me-in-production';
 const PORT = process.env.PORT || 3000;
 const IDLE_AFTER_MS = 30 * 60 * 1000; // 30 минут бездействия = AFK (страховка на стороне сервера)
 
+// ---------- Логирование ----------
+// Простой файловый логгер без внешних зависимостей — для 20-200 человек в локальной сети выделенный
+// пакет (winston/pino) избыточен. Ротация "по дню" через имя файла: logs/server-YYYY-MM-DD.log —
+// входы/выходы, срабатывания rate-limit, ошибки сервера; logs/client-YYYY-MM-DD.log — ошибки с
+// рабочих мест сотрудников (см. POST /api/client-log ниже), чтобы разбирать инциденты по логам на
+// сервере, а не просить каждого прислать скриншот или лезть к нему на ПК за файлом. Обе записи
+// дублируются в консоль, как и раньше (console.log/warn при старте никуда не делись).
+const logsDir = path.join(__dirname, 'logs');
+if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir);
+function dayStamp(d = new Date()) { return d.toISOString().slice(0, 10); }
+function writeLogLine(file, line) {
+  // Запись лога не должна блокировать ответ на реальный запрос и не должна валить процесс, если
+  // диск временно недоступен — поэтому асинхронно и без ожидания/обработки результата.
+  fs.appendFile(path.join(logsDir, file), line + '\n', () => {});
+}
+function logServer(level, event, meta = {}) {
+  const line = `${new Date().toISOString()} [${level}] ${event} ${JSON.stringify(meta)}`;
+  writeLogLine(`server-${dayStamp()}.log`, line);
+  (level === 'ERROR' ? console.error : console.log)(line);
+}
+function logClient(entry) {
+  const line = `${new Date().toISOString()} [CLIENT] ${JSON.stringify(entry)}`;
+  writeLogLine(`client-${dayStamp()}.log`, line);
+  console.error(line); // ошибка на чьём-то рабочем месте — сразу видно и в консоли сервера, не только в файле
+}
+// Иначе процесс просто молча падает без единой строки в наших логах — эти два обработчика есть
+// почти в любом node-сервисе, который планируют эксплуатировать всерьёз, а не только на своей машине.
+process.on('uncaughtException', (err) => {
+  logServer('ERROR', 'uncaught_exception', { message: err.message, stack: err.stack });
+  process.exit(1); // состояние после неперехваченного исключения не гарантированно консистентно
+});
+process.on('unhandledRejection', (reason) => {
+  logServer('ERROR', 'unhandled_rejection', { reason: reason instanceof Error ? reason.stack : String(reason) });
+});
+
 // ---------- База данных ----------
 const db = new Database(path.join(__dirname, 'messenger.db'));
 db.pragma('journal_mode = WAL');
@@ -393,6 +428,7 @@ app.post('/api/upload', auth, (req, res, next) => {
   // Проверяем тип ДО чтения тела запроса (имя файла уже известно из query-параметра) — так
   // запрещённый файл не занимает лишний трафик и не оседает в памяти сервера зря.
   if (isBlockedUploadName(String(req.query.name || ''))) {
+    logServer('WARN', 'upload_blocked', { name: req.query.name, userId: req.user.id, ip: req.ip });
     return res.status(415).json({ error: 'Такой тип файла запрещён к отправке (исполняемые/скриптовые файлы)' });
   }
   next();
@@ -456,6 +492,7 @@ function ipRateLimit({ windowMs, max }) {
     }
     entry.count += 1;
     if (entry.count > max) {
+      logServer('WARN', 'rate_limited', { ip: req.ip, path: req.path });
       return res.status(429).json({ error: 'Слишком много попыток с этого адреса, попробуйте позже' });
     }
     next();
@@ -505,6 +542,7 @@ app.post('/api/register', ipRateLimit({ windowMs: 60 * 60 * 1000, max: 10 }), (r
     // из bootstrap-admin.js создаётся отдельно, не через эту форму.
     const info = insertUser.run(username, hash, username, 0, 0, Date.now());
     invalidateUserIdsCache();
+    logServer('INFO', 'register', { username, id: info.lastInsertRowid, ip: req.ip });
     const token = jwt.sign({ id: info.lastInsertRowid }, SECRET, { expiresIn: '30d' });
     res.json({ token, user: getUserById.get(info.lastInsertRowid) });
   } catch {
@@ -516,16 +554,37 @@ app.post('/api/login', ipRateLimit({ windowMs: 10 * 60 * 1000, max: 30 }), (req,
   const { username, password } = req.body || {};
   const lockedSec = checkLoginLock(username);
   if (lockedSec) {
+    logServer('WARN', 'login_locked', { username, ip: req.ip, lockedSec });
     return res.status(429).json({ error: `Слишком много неверных попыток входа, повторите через ${lockedSec} сек.` });
   }
   const user = getUserByName.get(username);
   if (!user || !bcrypt.compareSync(password || '', user.password_hash)) {
     registerLoginFail(username);
+    logServer('WARN', 'login_failed', { username, ip: req.ip });
     return res.status(401).json({ error: 'Неверный логин или пароль' });
   }
   clearLoginFails(username);
+  logServer('INFO', 'login', { username, id: user.id, ip: req.ip });
   const token = jwt.sign({ id: user.id }, SECRET, { expiresIn: '30d' });
   res.json({ token, user: getUserById.get(user.id) });
+});
+
+// Ошибки с рабочих мест сотрудников — рендереры десктоп-клиента сами шлют их сюда при window.onerror/
+// unhandledrejection (см. installErrorReporting в ui-kit.js). Пишем в отдельный файл лога (не мешаем
+// с серверными событиями), с указанием, кто прислал и с какого хоста — так инцидент на чьём-то ПК
+// можно разобрать по логам на сервере, не прося сотрудника прислать скриншот или не выезжая к нему.
+app.post('/api/client-log', auth, (req, res) => {
+  const { kind, message, extra, source, hostname } = req.body || {};
+  logClient({
+    userId: req.user.id,
+    username: req.user.username,
+    hostname: String(hostname || '?').slice(0, 100),
+    source: String(source || '?').slice(0, 30),
+    kind: String(kind || '?').slice(0, 60),
+    message: String(message || '').slice(0, 2000),
+    extra: extra !== undefined ? JSON.stringify(extra).slice(0, 2000) : null,
+  });
+  res.json({ ok: true });
 });
 
 // ---------- Профиль (свой аккаунт) ----------
@@ -899,7 +958,7 @@ wss.on('connection', (ws, req) => {
   const token = url.searchParams.get('token');
   const hostname = url.searchParams.get('host') || 'неизвестный ПК';
   let payload;
-  try { payload = jwt.verify(token, SECRET); } catch { return ws.close(); }
+  try { payload = jwt.verify(token, SECRET); } catch { logServer('WARN', 'ws_auth_failed', { ip: req.socket.remoteAddress }); return ws.close(); }
   const user = getUserById.get(payload.id);
   if (!user) return ws.close();
 
@@ -1077,6 +1136,15 @@ function ensureBootstrapAdmin() {
   console.log(`\n✅ Создан стартовый администратор "${seed.username}" из bootstrap-admin.js.`);
   console.log('   Войдите под этой учёткой, создайте реальных администраторов и удалите стартовую через веб-панель.\n');
 }
+
+// Обработчик ошибок Express — САМЫЙ ПОСЛЕДНИЙ app.use, после всех маршрутов: без него Express уже
+// логирует необработанные исключения из синхронных обработчиков в stderr сам по себе (через
+// finalhandler), но только в консоль — в файл ничего не попадает. Пишем оба места.
+app.use((err, req, res, next) => {
+  logServer('ERROR', 'request_error', { path: req.path, method: req.method, message: err.message, stack: err.stack });
+  if (res.headersSent) return next(err);
+  res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+});
 
 server.listen(PORT, () => {
   ensureBootstrapAdmin();

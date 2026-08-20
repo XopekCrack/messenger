@@ -23,6 +23,23 @@ if (process.platform === 'win32' && require('os').release().startsWith('6.1')) {
   app.disableHardwareAcceleration();
 }
 
+// ---------- Локальный лог клиента ----------
+// Ошибки ВНУТРИ окон (JS-исключения, unhandledrejection) рендереры сами отправляют на сервер
+// (см. installErrorReporting в ui-kit.js/preload.js) — так их видно централизованно, не выезжая к
+// сотруднику. Но если упал сам рендерер целиком ('render-process-gone' ниже) или неперехваченное
+// исключение случилось в ГЛАВНОМ процессе — слать уже некому и нечем, единственное, что остаётся —
+// записать на диск самого пользователя, чтобы при разборе инцидента можно было попросить этот файл.
+const LOG_PATH = path.join(app.getPath('userData'), 'client.log');
+function logLocal(event, meta = {}) {
+  fs.appendFile(LOG_PATH, `${new Date().toISOString()} [${event}] ${JSON.stringify(meta)}\n`, () => {});
+}
+process.on('uncaughtException', (err) => {
+  logLocal('main_uncaught_exception', { message: err.message, stack: err.stack });
+});
+process.on('unhandledRejection', (reason) => {
+  logLocal('main_unhandled_rejection', { reason: reason instanceof Error ? reason.stack : String(reason) });
+});
+
 const SETTINGS_PATH = path.join(app.getPath('userData'), 'settings.json');
 
 const DEFAULT_SETTINGS = {
@@ -545,6 +562,12 @@ app.whenReady().then(() => {
   createRoster();
   createTray();
   startIdleWatch();
+
+  // Рендерер вылетел целиком (не просто JS-исключение внутри страницы, а сам процесс окна) —
+  // в этот момент он уже не может сам отправить лог на сервер, поэтому только локально.
+  app.on('render-process-gone', (event, webContents, details) => {
+    logLocal('render_process_gone', { reason: details.reason, exitCode: details.exitCode });
+  });
 
   // Путь для сохранения файлов по умолчанию (настройки клиента). Если задан — сохраняем сразу
   // туда без диалога "Сохранить как"; если нет — Electron сам покажет системный диалог с верно

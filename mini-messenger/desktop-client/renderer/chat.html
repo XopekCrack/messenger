@@ -334,6 +334,7 @@ const label = params.get('label');
 const token = params.get('token');
 const serverUrl = params.get('serverUrl');
 const me = JSON.parse(localStorage.getItem('me') || 'null');
+installErrorReporting(serverUrl, token, 'chat'); // см. ui-kit.js
 
 document.getElementById('label').textContent = label;
 if (type !== 'dm') document.getElementById('statusDot').style.display = 'none';
