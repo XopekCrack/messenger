@@ -731,10 +731,35 @@ function renderList() {
 
 let deptOrderCache = []; // имена отделов в порядке, заданном на сервере (стрелками ↑↓ в веб-панели)
 
+// Раз в 20 секунд (см. setInterval ниже) плюс по каждому 'users-changed' от WS — при росте штата
+// гонять список целиком на каждый пустой тик расточительно. Сервер отдаёт ETag на основе версии
+// списка (см. usersVersion в server.js); пока никто ничего не менял, ответ — пустой 304, без сборки
+// и передачи JSON, и без повторного рендера списка на клиенте.
+let usersEtag = null;
+let deptsEtag = null;
 async function refreshUsers() {
-  usersCache = await api('/api/users');
-  try { deptOrderCache = (await api('/api/departments')).map((d) => d.name); } catch { /* не критично — останется прошлый порядок или алфавитный */ }
-  renderList();
+  let changed = false;
+  const uHeaders = { Authorization: 'Bearer ' + token };
+  if (usersEtag) uHeaders['If-None-Match'] = usersEtag;
+  const ures = await fetch(serverUrl + '/api/users', { headers: uHeaders });
+  if (ures.status === 401) { desktop.logout(); throw new Error('Сессия недействительна'); }
+  if (!ures.ok && ures.status !== 304) throw new Error('request failed');
+  if (ures.status !== 304) {
+    usersEtag = ures.headers.get('ETag');
+    usersCache = await ures.json();
+    changed = true;
+  }
+  try {
+    const dHeaders = { Authorization: 'Bearer ' + token };
+    if (deptsEtag) dHeaders['If-None-Match'] = deptsEtag;
+    const dres = await fetch(serverUrl + '/api/departments', { headers: dHeaders });
+    if (dres.ok && dres.status !== 304) {
+      deptsEtag = dres.headers.get('ETag');
+      deptOrderCache = (await dres.json()).map((d) => d.name);
+      changed = true;
+    }
+  } catch { /* не критично — останется прошлый порядок или алфавитный */ }
+  if (changed) renderList();
 }
 
 // Роль/имя могли поменять на сервере (через веб-панель) — подтягиваем свежие данные без перезахода

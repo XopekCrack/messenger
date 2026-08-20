@@ -286,7 +286,12 @@ app.use(express.static(path.join(__dirname, 'public')));
 // Разрешаем запросы от десктоп-клиента (Electron грузит страницы с file://)
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  // If-None-Match — для условных GET /api/users и /api/departments (см. ниже); без явного
+  // разрешения браузер блокирует сам заголовок в запросе (не safelisted), а ETag в ответе —
+  // без Expose-Headers JS не может прочитать его через response.headers.get('ETag'), даже
+  // если заголовок реально пришёл по сети.
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, If-None-Match');
+  res.header('Access-Control-Expose-Headers', 'ETag');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
   if (req.method === 'OPTIONS') return res.sendStatus(200);
   next();
@@ -438,8 +443,18 @@ app.patch('/api/me', auth, (req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/api/users', auth, (req, res) => res.json(listUsersBasic.all()));
-app.get('/api/departments', auth, (req, res) => res.json(listDepartments.all()));
+app.get('/api/users', auth, (req, res) => {
+  const etag = `"users-v${usersVersion}"`;
+  if (req.headers['if-none-match'] === etag) return res.status(304).end();
+  res.set('ETag', etag);
+  res.json(listUsersBasic.all());
+});
+app.get('/api/departments', auth, (req, res) => {
+  const etag = `"users-v${usersVersion}"`;
+  if (req.headers['if-none-match'] === etag) return res.status(304).end();
+  res.set('ETag', etag);
+  res.json(listDepartments.all());
+});
 
 // История: без параметров — последние 200 сообщений (как раньше); ?since=&until= — диапазон
 // (используется для "сегодняшнего" окна чата и просмотра конкретного дня); ?q= — поиск по тексту
@@ -762,7 +777,14 @@ function broadcastPresence() {
 
 // Оповещаем всех подключённых клиентов, что список пользователей/отделов/ролей изменился —
 // клиент сам решает, что переспросить (роль/имя/список), без необходимости перезаходить в аккаунт.
+// Счётчик версии списка пользователей/отделов — растёт на каждое изменение (см. вызовы ниже) и
+// используется как ETag для GET /api/users и /api/departments (см. эти маршруты выше). Ростер
+// опрашивает оба раз в 20 секунд на каждого клиента — при 20-200 сотрудниках это не проблема, но
+// с ростом штата отдавать одинаковый JSON заново на каждый пустой тик бессмысленно: с ETag сервер
+// в подавляющем большинстве тиков просто отвечает 304 без сборки списка и передачи тела.
+let usersVersion = 0;
 function broadcastUsersChanged() {
+  usersVersion++;
   const payload = JSON.stringify({ type: 'users-changed' });
   for (const ws of connMeta.keys()) ws.send(payload);
 }
