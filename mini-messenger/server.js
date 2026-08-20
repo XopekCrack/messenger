@@ -64,6 +64,15 @@ db.exec(`
     key TEXT PRIMARY KEY,
     value TEXT
   );
+  -- Реакции — по одной эмодзи на пользователя на сообщение (как в Telegram): повторный клик по
+  -- той же эмодзи снимает реакцию, по другой — заменяет (см. ON CONFLICT в upsertReaction ниже).
+  CREATE TABLE IF NOT EXISTS message_reactions (
+    message_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    emoji TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (message_id, user_id)
+  );
 `);
 
 // Миграция на случай, если у кого-то уже есть база без колонок для файлов
@@ -76,6 +85,13 @@ db.exec(`
   // Отметка о прочтении — только для личных сообщений (to_id заполнен); для сообщений в общей
   // комнате остаётся NULL и не используется (галочки прочтения там неоднозначны — читателей много).
   if (!cols.includes('read_at')) db.exec('ALTER TABLE messages ADD COLUMN read_at INTEGER');
+  // Ответ на сообщение (reply) — reply_snapshot хранит ИМЯ И ТЕКСТ оригинала на момент ответа
+  // отдельно от reply_to_id (сам id, для клика "перейти к сообщению"), а не только id: то, на что
+  // ответили, могло быть очень старым и не попасть в текущую загруженную страницу истории (см.
+  // пагинацию выше) — цитата не должна ломаться из-за этого и требовать отдельного похода за
+  // оригиналом. Снимок делает сервер (не клиент) при отправке — источник истины один.
+  if (!cols.includes('reply_to_id')) db.exec('ALTER TABLE messages ADD COLUMN reply_to_id INTEGER');
+  if (!cols.includes('reply_snapshot')) db.exec('ALTER TABLE messages ADD COLUMN reply_snapshot TEXT');
 }
 {
   const cols = db.prepare("PRAGMA table_info(broadcasts)").all().map((c) => c.name);
@@ -141,7 +157,7 @@ function setSettingRaw(key, value) {
 // помечает такие файлы, чтобы клиент показал "файл удалён", а не сломанную/вечно грузящуюся карточку.
 function normalizeRow(row) {
   if (!row) return row;
-  const { file_url, file_name, file_size, files_json, ...rest } = row;
+  const { file_url, file_name, file_size, files_json, reply_to_id, reply_snapshot, ...rest } = row;
   let files = [];
   if (files_json) {
     try { files = JSON.parse(files_json); } catch { files = []; }
@@ -149,11 +165,40 @@ function normalizeRow(row) {
     files = [{ url: file_url, name: file_name, size: file_size }];
   }
   files = files.map((f) => ({ ...f, exists: fileExistsForUrl(f.url) }));
-  return { ...rest, files };
+  // reply_to_id/reply_snapshot есть только у messages (не у broadcasts, для них оба всегда undefined
+  // и reply останется null) — снимок текста/автора сделан сервером в момент ответа (см. миграцию
+  // выше), поэтому цитата не зависит от того, загружена ли сейчас страница с самим оригиналом.
+  let reply = null;
+  if (reply_snapshot) {
+    try { reply = { id: reply_to_id, ...JSON.parse(reply_snapshot) }; } catch { reply = null; }
+  }
+  return { ...rest, files, reply };
 }
 function fileExistsForUrl(url) {
   const diskName = String(url || '').split('/').pop();
   return !!diskName && fs.existsSync(path.join(uploadsDir, diskName));
+}
+
+// Реакции — отдельным батч-запросом по набору id (а не JOIN в каждый history-запрос: их SQL и
+// так довольно длинный, а групповая агрегация через GROUP_CONCAT усложнила бы normalizeRow).
+// json_each — встроенная в SQLite (JSON1, включён в бинарник better-sqlite3) функция "развернуть
+// JSON-массив в строки", позволяет передать произвольный список id одним параметром.
+const reactionsForMessages = db.prepare(`
+  SELECT message_id, emoji, user_id FROM message_reactions WHERE message_id IN (SELECT value FROM json_each(?))
+`);
+function attachReactions(rows) {
+  if (!rows.length) return rows;
+  const byMsg = new Map();
+  for (const r of reactionsForMessages.all(JSON.stringify(rows.map((r) => r.id)))) {
+    if (!byMsg.has(r.message_id)) byMsg.set(r.message_id, new Map());
+    const byEmoji = byMsg.get(r.message_id);
+    if (!byEmoji.has(r.emoji)) byEmoji.set(r.emoji, []);
+    byEmoji.get(r.emoji).push(r.user_id);
+  }
+  return rows.map((row) => ({
+    ...row,
+    reactions: byMsg.has(row.id) ? [...byMsg.get(row.id)].map(([emoji, userIds]) => ({ emoji, userIds })) : [],
+  }));
 }
 
 const insertUser = db.prepare('INSERT INTO users (username, password_hash, display_name, can_broadcast, can_admin, created_at) VALUES (?, ?, ?, ?, ?, ?)');
@@ -194,7 +239,17 @@ function requireCapability(cap) {
   };
 }
 
-const insertMessage = db.prepare('INSERT INTO messages (from_id, room, to_id, text, files_json, created_at) VALUES (?, ?, ?, ?, ?, ?)');
+const insertMessage = db.prepare('INSERT INTO messages (from_id, room, to_id, text, files_json, created_at, reply_to_id, reply_snapshot) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
+const getMessageForReply = db.prepare('SELECT id, from_id, text FROM messages WHERE id = ?');
+// Реакции — WS-обработчик 'react' ниже: чей маршрут (комната/личка) у сообщения, узнаём отдельным
+// запросом, чтобы разослать обновление тем же адресатам, что и само сообщение.
+const getMessageRoute = db.prepare('SELECT id, from_id, to_id, room FROM messages WHERE id = ?');
+const getUserReactionOnMessage = db.prepare('SELECT emoji FROM message_reactions WHERE message_id = ? AND user_id = ?');
+const deleteReaction = db.prepare('DELETE FROM message_reactions WHERE message_id = ? AND user_id = ?');
+const upsertReaction = db.prepare(`
+  INSERT INTO message_reactions (message_id, user_id, emoji, created_at) VALUES (?, ?, ?, ?)
+  ON CONFLICT(message_id, user_id) DO UPDATE SET emoji = excluded.emoji, created_at = excluded.created_at
+`);
 
 // История комнаты: по умолчанию (без фильтров) — последние 200; с since/until — диапазон дат; с q — поиск по тексту
 // before — курсор постраничной подгрузки (id сообщения, "строго раньше которого" искать): при первой
@@ -203,17 +258,17 @@ const insertMessage = db.prepare('INSERT INTO messages (from_id, room, to_id, te
 // ещё, и предлагает "Показать ещё"/подгружает при прокрутке вверх; иначе это был последний кусок.
 const HISTORY_PAGE_SIZE = 200;
 const roomHistoryAll = db.prepare(`
-  SELECT m.id, m.text, m.created_at, m.from_id, m.file_url, m.file_name, m.file_size, m.files_json, u.display_name AS from_user
+  SELECT m.id, m.text, m.created_at, m.from_id, m.file_url, m.file_name, m.file_size, m.files_json, m.reply_to_id, m.reply_snapshot, u.display_name AS from_user
   FROM messages m JOIN users u ON u.id = m.from_id
   WHERE m.room = ? AND m.id < ? ORDER BY m.id DESC LIMIT ${HISTORY_PAGE_SIZE}
 `);
 const roomHistoryRange = db.prepare(`
-  SELECT m.id, m.text, m.created_at, m.from_id, m.file_url, m.file_name, m.file_size, m.files_json, u.display_name AS from_user
+  SELECT m.id, m.text, m.created_at, m.from_id, m.file_url, m.file_name, m.file_size, m.files_json, m.reply_to_id, m.reply_snapshot, u.display_name AS from_user
   FROM messages m JOIN users u ON u.id = m.from_id
   WHERE m.room = ? AND m.created_at >= ? AND m.created_at < ? ORDER BY m.id ASC
 `);
 const roomHistorySearch = db.prepare(`
-  SELECT m.id, m.text, m.created_at, m.from_id, m.file_url, m.file_name, m.file_size, m.files_json, u.display_name AS from_user
+  SELECT m.id, m.text, m.created_at, m.from_id, m.file_url, m.file_name, m.file_size, m.files_json, m.reply_to_id, m.reply_snapshot, u.display_name AS from_user
   FROM messages m JOIN users u ON u.id = m.from_id
   WHERE m.room = ? AND m.id < ? AND lower_ru(m.text) LIKE '%' || lower_ru(?) || '%' ORDER BY m.id DESC LIMIT ${HISTORY_PAGE_SIZE}
 `);
@@ -223,19 +278,19 @@ const roomHistoryDays = db.prepare(`
 `);
 
 const dmHistoryAll = db.prepare(`
-  SELECT m.id, m.text, m.created_at, m.from_id, m.to_id, m.read_at, m.file_url, m.file_name, m.file_size, m.files_json, u.display_name AS from_user
+  SELECT m.id, m.text, m.created_at, m.from_id, m.to_id, m.read_at, m.file_url, m.file_name, m.file_size, m.files_json, m.reply_to_id, m.reply_snapshot, u.display_name AS from_user
   FROM messages m JOIN users u ON u.id = m.from_id
   WHERE ((m.from_id = ? AND m.to_id = ?) OR (m.from_id = ? AND m.to_id = ?)) AND m.id < ?
   ORDER BY m.id DESC LIMIT ${HISTORY_PAGE_SIZE}
 `);
 const dmHistoryRange = db.prepare(`
-  SELECT m.id, m.text, m.created_at, m.from_id, m.to_id, m.read_at, m.file_url, m.file_name, m.file_size, m.files_json, u.display_name AS from_user
+  SELECT m.id, m.text, m.created_at, m.from_id, m.to_id, m.read_at, m.file_url, m.file_name, m.file_size, m.files_json, m.reply_to_id, m.reply_snapshot, u.display_name AS from_user
   FROM messages m JOIN users u ON u.id = m.from_id
   WHERE ((m.from_id = ? AND m.to_id = ?) OR (m.from_id = ? AND m.to_id = ?)) AND m.created_at >= ? AND m.created_at < ?
   ORDER BY m.id ASC
 `);
 const dmHistorySearch = db.prepare(`
-  SELECT m.id, m.text, m.created_at, m.from_id, m.to_id, m.read_at, m.file_url, m.file_name, m.file_size, m.files_json, u.display_name AS from_user
+  SELECT m.id, m.text, m.created_at, m.from_id, m.to_id, m.read_at, m.file_url, m.file_name, m.file_size, m.files_json, m.reply_to_id, m.reply_snapshot, u.display_name AS from_user
   FROM messages m JOIN users u ON u.id = m.from_id
   WHERE ((m.from_id = ? AND m.to_id = ?) OR (m.from_id = ? AND m.to_id = ?)) AND m.id < ? AND lower_ru(m.text) LIKE '%' || lower_ru(?) || '%'
   ORDER BY m.id DESC LIMIT ${HISTORY_PAGE_SIZE}
@@ -467,9 +522,9 @@ app.get('/api/departments', auth, (req, res) => {
 app.get('/api/history/room/:room', auth, (req, res) => {
   const { since, until, q } = req.query;
   const before = beforeId(req);
-  if (q) return res.json(roomHistorySearch.all(req.params.room, before, q).reverse().map(normalizeRow));
-  if (since && until) return res.json(roomHistoryRange.all(req.params.room, Number(since), Number(until)).map(normalizeRow)); // уже ASC из SQL
-  res.json(roomHistoryAll.all(req.params.room, before).reverse().map(normalizeRow));
+  if (q) return res.json(attachReactions(roomHistorySearch.all(req.params.room, before, q).reverse().map(normalizeRow)));
+  if (since && until) return res.json(attachReactions(roomHistoryRange.all(req.params.room, Number(since), Number(until)).map(normalizeRow))); // уже ASC из SQL
+  res.json(attachReactions(roomHistoryAll.all(req.params.room, before).reverse().map(normalizeRow)));
 });
 // Группировка по дням учитывает часовой пояс КЛИЕНТА (?offsetMinutes= — минуты впереди UTC,
 // т.е. для UTC+3 это 180), а не сервера — так деление на дни всегда совпадает с тем, что человек
@@ -494,9 +549,9 @@ app.get('/api/history/dm/:userId', auth, (req, res) => {
   const other = Number(req.params.userId);
   const { since, until, q } = req.query;
   const before = beforeId(req);
-  if (q) return res.json(dmHistorySearch.all(req.user.id, other, other, req.user.id, before, q).reverse().map(normalizeRow));
-  if (since && until) return res.json(dmHistoryRange.all(req.user.id, other, other, req.user.id, Number(since), Number(until)).map(normalizeRow)); // уже ASC из SQL
-  res.json(dmHistoryAll.all(req.user.id, other, other, req.user.id, before).reverse().map(normalizeRow));
+  if (q) return res.json(attachReactions(dmHistorySearch.all(req.user.id, other, other, req.user.id, before, q).reverse().map(normalizeRow)));
+  if (since && until) return res.json(attachReactions(dmHistoryRange.all(req.user.id, other, other, req.user.id, Number(since), Number(until)).map(normalizeRow))); // уже ASC из SQL
+  res.json(attachReactions(dmHistoryAll.all(req.user.id, other, other, req.user.id, before).reverse().map(normalizeRow)));
 });
 app.get('/api/history/dm/:userId/days', auth, (req, res) => {
   const other = Number(req.params.userId);
@@ -862,6 +917,34 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
+    // Реакции — по одной эмодзи на пользователя на сообщение: повторный клик той же эмодзи снимает
+    // реакцию, другой — заменяет. Рассылаем ПОЛНЫЙ актуальный набор реакций сообщения (а не дельту) —
+    // проще и надёжнее инкрементального патча, а реакций на одном сообщении обычно немного.
+    if (msg.type === 'react') {
+      const messageId = Number(msg.messageId);
+      const emoji = String(msg.emoji || '').slice(0, 8);
+      if (!messageId || !emoji) return;
+      const target = getMessageRoute.get(messageId);
+      if (!target) return;
+      const existing = getUserReactionOnMessage.get(messageId, user.id);
+      if (existing && existing.emoji === emoji) deleteReaction.run(messageId, user.id);
+      else upsertReaction.run(messageId, user.id, emoji, Date.now());
+      const byEmoji = new Map();
+      for (const r of reactionsForMessages.all(JSON.stringify([messageId]))) {
+        if (!byEmoji.has(r.emoji)) byEmoji.set(r.emoji, []);
+        byEmoji.get(r.emoji).push(r.user_id);
+      }
+      const reactions = [...byEmoji].map(([e, userIds]) => ({ emoji: e, userIds }));
+      const out = JSON.stringify({ type: 'reaction', messageId, reactions });
+      if (target.room) {
+        for (const c of connMeta.keys()) c.send(out);
+      } else {
+        const targets = new Set([...(online.get(target.to_id) || []), ...(online.get(target.from_id) || [])]);
+        targets.forEach((c) => c.send(out));
+      }
+      return;
+    }
+
     if (msg.type !== 'send') return;
     const now = Date.now();
     const text = String(msg.text || '').slice(0, 4000).trim();
@@ -876,13 +959,28 @@ wss.on('connection', (ws, req) => {
     if (!text && !files.length) return;
     const filesJson = files.length ? JSON.stringify(files) : null;
 
+    // Ответ на сообщение (reply) — снимок автора/текста делаем ЗДЕСЬ, на сервере (источник истины),
+    // а не доверяем тому, что прислал клиент: то, на что отвечают, могло не быть у него в DOM
+    // (старая страница пагинации), а после отправки должно остаться верным, даже если оригинал
+    // потом станет недоступен клиенту.
+    let replyToId = null, replySnapshot = null, replyOut = null;
+    if (msg.replyTo) {
+      const target = getMessageForReply.get(Number(msg.replyTo));
+      if (target) {
+        const targetUser = getUserById.get(target.from_id);
+        replyToId = target.id;
+        replyOut = { id: target.id, from_user: targetUser ? targetUser.display_name : '?', text: (target.text || '').slice(0, 300) };
+        replySnapshot = JSON.stringify({ from_user: replyOut.from_user, text: replyOut.text });
+      }
+    }
+
     if (msg.room) {
-      insertMessage.run(user.id, msg.room, null, text, filesJson, now);
-      const out = JSON.stringify({ type: 'message', room: msg.room, from_id: user.id, from_user: user.display_name, text, files, created_at: now });
+      const info = insertMessage.run(user.id, msg.room, null, text, filesJson, now, replyToId, replySnapshot);
+      const out = JSON.stringify({ type: 'message', id: info.lastInsertRowid, room: msg.room, from_id: user.id, from_user: user.display_name, text, files, created_at: now, reply: replyOut });
       for (const c of connMeta.keys()) c.send(out); // общая комната — всем
     } else if (msg.to) {
-      insertMessage.run(user.id, null, msg.to, text, filesJson, now);
-      const out = JSON.stringify({ type: 'message', to_id: msg.to, from_id: user.id, from_user: user.display_name, text, files, created_at: now });
+      const info = insertMessage.run(user.id, null, msg.to, text, filesJson, now, replyToId, replySnapshot);
+      const out = JSON.stringify({ type: 'message', id: info.lastInsertRowid, to_id: msg.to, from_id: user.id, from_user: user.display_name, text, files, created_at: now, reply: replyOut });
       const targets = new Set([...(online.get(msg.to) || []), ...(online.get(user.id) || [])]);
       targets.forEach((c) => c.send(out));
     }

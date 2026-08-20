@@ -47,10 +47,62 @@
      ПЕРВОГО ребёнка — тот же результат без этой проблемы: тянет всё содержимое вниз, только когда
      оно короче контейнера, а не мешает обычной прокрутке, когда сообщений много. */
   #messages > *:first-child { margin-top: auto; }
-  .msg { max-width: 78%; min-width: 0; padding: 7px 11px 6px; border-radius: 12px; background: var(--bubble); align-self: flex-start; }
+  .msg { position: relative; max-width: 78%; min-width: 0; padding: 7px 11px 6px; border-radius: 12px; background: var(--bubble); align-self: flex-start; }
   .msg.own { background: var(--own); align-self: flex-end; }
   .msg .who { font-size: 10.5px; color: var(--accent); font-weight: 600; margin-bottom: 2px; }
   .msg.own .who { display: none; }
+  /* Клик по сообщению-цитате (см. scrollToMessage) — короткая вспышка рамки, чтобы глаз нашёл,
+     куда именно долистало, а не мгновенный прыжок без обратной связи. */
+  @keyframes msgFlash { 0%, 100% { box-shadow: none; } 30% { box-shadow: 0 0 0 3px var(--accent); } }
+  .msg.flash { animation: msgFlash .9s ease; }
+
+  /* Всплывающий тулбар (реакция/ответ) — над правым (своим) или левым (чужим) верхним углом
+     пузыря, показывается только при наведении, не занимает место в раскладке. */
+  .msg-toolbar {
+    position: absolute; top: -14px; right: 8px; display: none; gap: 2px; z-index: 5;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    padding: 2px; box-shadow: var(--shadow);
+  }
+  .msg.own .msg-toolbar { right: auto; left: 8px; }
+  .msg:hover .msg-toolbar { display: flex; }
+  .mt-btn { width: 24px; height: 24px; border: none; background: transparent; border-radius: 6px; color: var(--muted); cursor: pointer; display: flex; align-items: center; justify-content: center; }
+  .mt-btn:hover { background: var(--hover); color: var(--text); }
+  .mt-btn svg { width: 14px; height: 14px; }
+
+  /* Цитата сообщения, на которое отвечают (см. replyQuoteHtml) — клик прокручивает к оригиналу. */
+  .reply-quote { display: flex; gap: 7px; margin-bottom: 4px; padding: 3px 8px; border-radius: 6px; background: var(--hover); cursor: pointer; }
+  .reply-quote .rq-bar { width: 2px; border-radius: 2px; background: var(--accent); flex-shrink: 0; }
+  .reply-quote .rq-body { min-width: 0; display: flex; flex-direction: column; }
+  .reply-quote .rq-name { font-size: 10.5px; font-weight: 700; color: var(--accent); }
+  .reply-quote .rq-text { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* Реакции — плашки под сообщением (см. reactionsBarHtml); своя реакция залита акцентным
+     цветом — тот же приём, что у активной кнопки дня в панели истории (#hpDays .dbtn.active). */
+  .reactions-bar { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+  .reaction-pill { display: inline-flex; align-items: center; gap: 3px; padding: 1px 7px; border-radius: 10px; border: 1px solid var(--border); background: var(--panel-2); cursor: pointer; font-size: 11px; color: var(--text); }
+  .reaction-pill img.twemoji { width: 13px; height: 13px; vertical-align: -2px; }
+  .reaction-pill.mine { border-color: var(--accent); background: var(--accent); color: #fff; }
+  .reaction-pill .rcount { font-variant-numeric: tabular-nums; color: var(--muted); }
+  .reaction-pill.mine .rcount { color: #fff; }
+
+  /* Быстрый выбор реакции — компактная плашка из нескольких эмодзи, всплывает у кнопки в тулбаре
+     сообщения (см. openQuickReact); position:fixed — считается от экрана, а не от #messages, чтобы
+     не обрезаться его overflow:hidden. */
+  .quick-react-popup { position: fixed; display: flex; gap: 2px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 6px; box-shadow: var(--shadow); z-index: 200; }
+  .quick-react-popup button { width: 30px; height: 30px; border: none; background: transparent; border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+  .quick-react-popup button:hover { background: var(--hover); }
+  .quick-react-popup img.twemoji { width: 20px; height: 20px; }
+
+  /* Плашка "Ответ на..." над строкой ввода (см. paintReplyBanner) — в отличие от typingIndicator
+     это часть обычной раскладки (не absolute): должна раздвигать композер, а не наплывать поверх
+     текста, который набирают. */
+  .reply-banner { display: none; align-items: center; gap: 8px; padding: 6px 10px; border-top: 1px solid var(--border); background: var(--panel); }
+  .reply-banner .rb-bar { width: 2px; align-self: stretch; border-radius: 2px; background: var(--accent); }
+  .reply-banner .rb-content { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .reply-banner .rb-name { font-size: 11px; font-weight: 700; color: var(--accent); }
+  .reply-banner .rb-text { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .reply-banner .rb-close { width: 24px; height: 24px; border: none; background: transparent; border-radius: 50%; color: var(--muted); cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  .reply-banner .rb-close:hover { background: var(--hover); color: var(--text); }
   /* Настройка "Скрывать имя в сообщениях" (см. applyHideNames ниже) — только для личных чатов:
      имя и так видно в шапке окна, а в общей комнате оно как раз нужно, чтобы различать реплики. */
   body.hide-names .msg .who { display: none; }
@@ -242,6 +294,11 @@
 <div id="presencePanel"></div>
 
 <div id="messages"></div>
+<div id="replyBanner" class="reply-banner">
+  <div class="rb-bar"></div>
+  <div class="rb-content"><div class="rb-name"></div><div class="rb-text"></div></div>
+  <button type="button" class="rb-close" id="rbClose"></button>
+</div>
 <div id="composer">
   <div id="typingIndicator"></div>
   <button class="round" id="attach" title="Прикрепить файл"></button>
@@ -436,7 +493,28 @@ function bubbleHtml(m, { withDate, query } = {}) {
     }).join('');
     body += `<div class="files-block">${cards}</div><div class="files-time">${stamp}${tick}</div>`;
   }
-  return `<div class="msg${own ? ' own' : ''}" data-ts="${m.created_at}"><div class="who">${m.from_user}</div>${body}</div>`;
+  const toolbar = `<div class="msg-toolbar"><button type="button" class="mt-btn mt-react" data-mid="${m.id}" title="Реакция">${uiIcon('emoji')}</button><button type="button" class="mt-btn mt-reply" data-mid="${m.id}" title="Ответить">${uiIcon('reply')}</button></div>`;
+  return `<div class="msg${own ? ' own' : ''}" data-ts="${m.created_at}" data-id="${m.id}">${toolbar}${replyQuoteHtml(m)}<div class="who">${m.from_user}</div>${body}${reactionsBarHtml(m)}</div>`;
+}
+
+// Цитата сообщения, на которое отвечают — снимок автора/текста сделан на сервере в момент отправки
+// (см. миграцию reply_snapshot в server.js), поэтому не ломается, даже если само оригинальное
+// сообщение сейчас не загружено в этом окне (старая страница пагинации/другой день).
+function replyQuoteHtml(m) {
+  if (!m.reply) return '';
+  return `<div class="reply-quote" data-reply-id="${m.reply.id}"><div class="rq-bar"></div><div class="rq-body"><span class="rq-name">${escapeHtml(m.reply.from_user || '')}</span><span class="rq-text">${escapeHtml((m.reply.text || '').slice(0, 140))}</span></div></div>`;
+}
+
+// Реакции — переиспользуется и при первой отрисовке сообщения (bubbleHtml), и при живом обновлении
+// по WS-событию 'reaction' (см. ws.onmessage) — там результат подставляется через outerHTML/remove.
+function reactionsBarHtml(m) { return reactionsMarkup(m.id, m.reactions || []); }
+function reactionsMarkup(mid, reactions) {
+  if (!reactions || !reactions.length) return '';
+  const pills = reactions.map((r) => {
+    const mine = r.userIds.includes(me.id);
+    return `<button type="button" class="reaction-pill${mine ? ' mine' : ''}" data-emoji="${escapeAttr(r.emoji)}" data-mid="${mid}">${emojiHtml(r.emoji)}<span class="rcount">${r.userIds.length}</span></button>`;
+  }).join('');
+  return `<div class="reactions-bar">${pills}</div>`;
 }
 
 // Живое обновление галочек на уже отрисованных своих сообщениях, когда приходит read-receipt —
@@ -570,6 +648,17 @@ function connectWs() {
       if (belongsTyping) showTypingIndicator(data.from_user);
       return;
     }
+    // Реакция добавлена/снята/заменена — сообщение может быть отрисовано и в основной ленте, и
+    // в панели истории одновременно, поэтому обновляем везде, где сейчас есть карточка с этим id.
+    if (data.type === 'reaction') {
+      const html = reactionsMarkup(data.messageId, data.reactions);
+      document.querySelectorAll(`[data-id="${data.messageId}"]`).forEach((el) => {
+        const bar = el.querySelector('.reactions-bar');
+        if (bar) { if (html) bar.outerHTML = html; else bar.remove(); }
+        else if (html) el.insertAdjacentHTML('beforeend', html);
+      });
+      return;
+    }
     if (data.type !== 'message') return;
     const belongs = type === 'room' ? data.room === id : (data.from_id === id || data.to_id === id);
     if (belongs) { hideTypingIndicator(); addMessage(data); } // раз сообщение пришло — печатать закончил
@@ -614,6 +703,79 @@ function hideTypingIndicator() {
   document.getElementById('typingIndicator').classList.remove('show');
 }
 
+// ---------- Ответ на сообщение (reply) ----------
+let replyingTo = null; // { id, from_user, text } | null
+function paintReplyBanner() {
+  const el = document.getElementById('replyBanner');
+  if (!replyingTo) { el.style.display = 'none'; return; }
+  el.style.display = 'flex';
+  el.querySelector('.rb-name').textContent = replyingTo.from_user;
+  el.querySelector('.rb-text').textContent = replyingTo.text;
+}
+function clearReplyingTo() { replyingTo = null; paintReplyBanner(); }
+function startReplyTo(mid) {
+  const el = document.querySelector(`#messages [data-id="${mid}"], #hpMessages [data-id="${mid}"]`);
+  if (!el) return;
+  const from_user = el.querySelector('.who')?.textContent || label;
+  const text = el.querySelector('.txt')?.dataset.rawText || (el.querySelector('.fn') ? '📎 ' + el.querySelector('.fn').textContent : '');
+  replyingTo = { id: mid, from_user, text };
+  paintReplyBanner();
+  textEl.focus();
+}
+document.getElementById('rbClose').addEventListener('click', clearReplyingTo);
+
+// ---------- Реакции ----------
+function toggleReaction(mid, emoji) {
+  sendPayload({ type: 'react', messageId: mid, emoji });
+}
+const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🔥', '🙏', '✅'];
+let quickReactPopup = null;
+function closeQuickReact() { quickReactPopup?.remove(); quickReactPopup = null; }
+function openQuickReact(btn) {
+  closeQuickReact();
+  const mid = Number(btn.dataset.mid);
+  const pop = document.createElement('div');
+  pop.className = 'quick-react-popup';
+  pop.innerHTML = QUICK_REACTIONS.map((e) => `<button type="button" data-emoji="${escapeAttr(e)}">${emojiHtml(e)}</button>`).join('');
+  document.body.appendChild(pop); // сначала в DOM — иначе offsetWidth/offsetHeight ниже ещё не посчитаны
+  const rect = btn.getBoundingClientRect();
+  pop.style.left = Math.max(4, Math.min(rect.left, window.innerWidth - pop.offsetWidth - 4)) + 'px';
+  pop.style.top = Math.max(4, rect.top - pop.offsetHeight - 4) + 'px';
+  pop.addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-emoji]');
+    if (!b) return;
+    toggleReaction(mid, b.dataset.emoji);
+    closeQuickReact();
+  });
+  quickReactPopup = pop;
+}
+document.addEventListener('click', (e) => {
+  if (quickReactPopup && !e.target.closest('.quick-react-popup') && !e.target.closest('.mt-react')) closeQuickReact();
+});
+
+// Клик по цитате (reply-quote) прокручивает к оригиналу, если он сейчас загружен в этом окне —
+// текст цитаты в самой карточке (reply_snapshot с сервера) не зависит от того, найдётся ли оригинал.
+function scrollToMessage(mid) {
+  const el = document.querySelector(`#messages [data-id="${mid}"]`) || document.querySelector(`#hpMessages [data-id="${mid}"]`);
+  if (!el) { chatToast('Исходное сообщение не загружено в этом окне'); return; }
+  el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  el.classList.add('flash');
+  setTimeout(() => el.classList.remove('flash'), 900);
+}
+
+function wireMessageToolbar(container) {
+  container.addEventListener('click', (e) => {
+    const reactBtn = e.target.closest('.mt-react');
+    if (reactBtn) { e.stopPropagation(); openQuickReact(reactBtn); return; }
+    const replyBtn = e.target.closest('.mt-reply');
+    if (replyBtn) { e.stopPropagation(); startReplyTo(Number(replyBtn.dataset.mid)); return; }
+    const pill = e.target.closest('.reaction-pill');
+    if (pill) { e.stopPropagation(); toggleReaction(Number(pill.dataset.mid), pill.dataset.emoji); return; }
+    const quote = e.target.closest('.reply-quote');
+    if (quote) { e.stopPropagation(); scrollToMessage(Number(quote.dataset.replyId)); return; }
+  });
+}
+
 function sendPayload(payload) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(payload));
   else wsReadyQueue.push(() => ws.send(JSON.stringify(payload)));
@@ -632,7 +794,9 @@ function send() {
   const text = input.value.trim();
   if (!text) return;
   const payload = type === 'room' ? { type: 'send', room: id, text } : { type: 'send', to: id, text };
+  if (replyingTo) payload.replyTo = replyingTo.id;
   sendPayload(payload);
+  clearReplyingTo();
   input.value = '';
   input.style.height = 'auto'; // сброс авто-роста после отправки — снова однострочное поле
   lastTypingSentAt = 0; // следующее нажатие клавиши для НОВОГО сообщения не должно ждать throttle
@@ -643,6 +807,7 @@ function send() {
 const textEl = document.getElementById('text');
 textEl.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+  if (e.key === 'Escape' && replyingTo) { e.preventDefault(); clearReplyingTo(); }
 });
 textEl.addEventListener('input', () => {
   textEl.style.height = 'auto';
@@ -837,6 +1002,7 @@ function hideChatBodySmoothly() {
   // запоминаем позицию явно, а не полагаемся на то, что она переживёт display:none сама по себе.
   box.dataset.wasAtBottom = (box.scrollHeight - box.scrollTop - box.clientHeight < 4) ? '1' : '';
   box.dataset.savedScrollTop = box.scrollTop;
+  document.getElementById('replyBanner').style.display = 'none'; // не участвует в fade — просто убираем, пока открыта История
   ['messages', 'composer'].forEach((id) => {
     const el = document.getElementById(id);
     if (el.classList.contains('chat-hidden')) return;
@@ -858,6 +1024,7 @@ function showChatBodySmoothly() {
   // (не внизу) — просто восстанавливаем точную позицию, где он и был.
   programmaticScroll = true;
   box.scrollTop = box.dataset.wasAtBottom ? box.scrollHeight : Number(box.dataset.savedScrollTop || 0);
+  paintReplyBanner(); // восстановит видимость, если ответ так и не был отправлен/отменён за время открытой Истории
 }
 
 async function openHistoryPanel() {
@@ -1080,6 +1247,8 @@ function wireMessageContextMenu(container) {
 }
 wireMessageContextMenu(document.getElementById('messages'));
 wireMessageContextMenu(document.getElementById('hpMessages'));
+wireMessageToolbar(document.getElementById('messages'));
+wireMessageToolbar(document.getElementById('hpMessages'));
 
 loadHistory();
 connectWs();
