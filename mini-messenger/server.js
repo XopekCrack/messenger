@@ -108,6 +108,22 @@ db.exec(`
     created_at INTEGER NOT NULL,
     PRIMARY KEY (message_id, user_id)
   );
+  -- Именованные группы поверх личных сообщений и одной общей комнаты — переписка группы хранится
+  -- в messages.room тем же способом, что и общая комната (см. комментарий у колонки room выше),
+  -- просто под значением 'group:<id>' вместо 'general' — это даром переиспользует ВСЮ существующую
+  -- SQL-инфраструктуру комнатной истории (поиск/пагинация/дни), не заводя отдельных таблиц под неё.
+  CREATE TABLE IF NOT EXISTS groups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    created_by INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS group_members (
+    group_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    added_at INTEGER NOT NULL,
+    PRIMARY KEY (group_id, user_id)
+  );
 `);
 
 // Миграция на случай, если у кого-то уже есть база без колонок для файлов
@@ -264,6 +280,40 @@ const insertDepartment = db.prepare('INSERT INTO departments (name, sort_order) 
 const updateDepartmentStmt = db.prepare('UPDATE departments SET name = ? WHERE id = ?');
 const setDepartmentOrder = db.prepare('UPDATE departments SET sort_order = ? WHERE id = ?');
 const deleteDepartmentStmt = db.prepare('DELETE FROM departments WHERE id = ?');
+
+// ---------- Группы ----------
+// room = 'group:<id>' (см. схему выше) — эти две функции — единственное место, где нужно знать
+// формат строки, всё остальное работает с числовым groupId.
+function isGroupRoom(room) { return typeof room === 'string' && room.startsWith('group:'); }
+function groupIdFromRoom(room) { return Number(room.slice('group:'.length)); }
+
+const insertGroup = db.prepare('INSERT INTO groups (name, created_by, created_at) VALUES (?, ?, ?)');
+const getGroup = db.prepare('SELECT * FROM groups WHERE id = ?');
+const renameGroupStmt = db.prepare('UPDATE groups SET name = ? WHERE id = ?');
+const deleteGroupStmt = db.prepare('DELETE FROM groups WHERE id = ?');
+const listGroupsForUser = db.prepare(`
+  SELECT g.id, g.name, g.created_by, g.created_at
+  FROM groups g JOIN group_members gm ON gm.group_id = g.id
+  WHERE gm.user_id = ?
+  ORDER BY g.name
+`);
+const listGroupMembers = db.prepare(`
+  SELECT u.id, u.username, u.display_name
+  FROM group_members gm JOIN users u ON u.id = gm.user_id
+  WHERE gm.group_id = ? ORDER BY u.display_name
+`);
+const listGroupMemberIds = db.prepare('SELECT user_id FROM group_members WHERE group_id = ?');
+const isGroupMemberStmt = db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND user_id = ?');
+const addGroupMember = db.prepare('INSERT OR IGNORE INTO group_members (group_id, user_id, added_at) VALUES (?, ?, ?)');
+const removeGroupMember = db.prepare('DELETE FROM group_members WHERE group_id = ? AND user_id = ?');
+const deleteGroupMembersStmt = db.prepare('DELETE FROM group_members WHERE group_id = ?');
+const countGroupMembers = db.prepare('SELECT COUNT(*) c FROM group_members WHERE group_id = ?');
+
+function groupMemberIds(groupId) { return listGroupMemberIds.all(groupId).map((r) => r.user_id); }
+// Управлять группой (переименовать, добавить/убрать участников, удалить) может тот, кто её создал,
+// или любой администратор сайта — так группа не "осиротеет" безвозвратно, если создатель уйдёт из
+// неё или уволится. Обычный участник может только написать в группу и сам из неё выйти.
+function canManageGroup(user, group) { return group.created_by === user.id || !!user.can_admin; }
 
 // Право проверяется по уже эффективному значению req.user, которое auth() перечитывает из базы
 // на каждый запрос — смена права действует сразу, без перелогина.
@@ -610,10 +660,92 @@ app.get('/api/departments', auth, (req, res) => {
   res.json(listDepartments.all());
 });
 
+// ---------- Группы ----------
+// Управлять группой (переименовать/добавить-убрать участников/удалить) может только создатель или
+// администратор сайта (canManageGroup выше) — обычный участник может написать в группу и сам из неё
+// выйти. Права не наследуются от отдела: группу может собрать кто угодно под свою временную задачу,
+// не только руководитель отдела.
+app.get('/api/groups', auth, (req, res) => res.json(listGroupsForUser.all(req.user.id)));
+
+app.post('/api/groups', auth, (req, res) => {
+  const name = String((req.body || {}).name || '').trim();
+  if (!name) return res.status(400).json({ error: 'Укажите название группы' });
+  const memberIds = Array.isArray((req.body || {}).memberIds) ? req.body.memberIds.map(Number).filter((n) => Number.isFinite(n)) : [];
+  const now = Date.now();
+  const info = insertGroup.run(name.slice(0, 80), req.user.id, now);
+  const groupId = info.lastInsertRowid;
+  addGroupMember.run(groupId, req.user.id, now); // создатель — всегда участник, даже если забыли отметить себя в списке
+  for (const uid of memberIds) if (uid !== req.user.id) addGroupMember.run(groupId, uid, now);
+  broadcastGroupsChanged();
+  res.json({ ok: true, id: groupId });
+});
+
+app.get('/api/groups/:id/members', auth, (req, res) => {
+  const groupId = Number(req.params.id);
+  if (!isGroupMemberStmt.get(groupId, req.user.id) && !req.user.can_admin) return res.status(403).json({ error: 'Вы не участник этой группы' });
+  res.json(listGroupMembers.all(groupId));
+});
+
+app.patch('/api/groups/:id', auth, (req, res) => {
+  const group = getGroup.get(Number(req.params.id));
+  if (!group) return res.status(404).json({ error: 'Группа не найдена' });
+  if (!canManageGroup(req.user, group)) return res.status(403).json({ error: 'Недостаточно прав' });
+  const name = String((req.body || {}).name || '').trim();
+  if (!name) return res.status(400).json({ error: 'Название не может быть пустым' });
+  renameGroupStmt.run(name.slice(0, 80), group.id);
+  broadcastGroupsChanged();
+  res.json({ ok: true });
+});
+
+app.post('/api/groups/:id/members', auth, (req, res) => {
+  const group = getGroup.get(Number(req.params.id));
+  if (!group) return res.status(404).json({ error: 'Группа не найдена' });
+  if (!canManageGroup(req.user, group)) return res.status(403).json({ error: 'Недостаточно прав' });
+  const userIds = Array.isArray((req.body || {}).userIds) ? req.body.userIds.map(Number).filter((n) => Number.isFinite(n)) : [];
+  const now = Date.now();
+  for (const uid of userIds) addGroupMember.run(group.id, uid, now);
+  broadcastGroupsChanged();
+  res.json({ ok: true });
+});
+
+app.delete('/api/groups/:id/members/:userId', auth, (req, res) => {
+  const group = getGroup.get(Number(req.params.id));
+  if (!group) return res.status(404).json({ error: 'Группа не найдена' });
+  const targetId = Number(req.params.userId);
+  // Убрать ЧУЖОГО участника — только владелец/админ; выйти самому — можно всегда, без разрешения.
+  if (targetId !== req.user.id && !canManageGroup(req.user, group)) return res.status(403).json({ error: 'Недостаточно прав' });
+  removeGroupMember.run(group.id, targetId);
+  // Группа осталась без единого участника — писать/читать в неё уже некому, и даже администратор не
+  // увидит её в своём списке (listGroupsForUser требует членства) — удаляем саму запись о группе.
+  // Историю переписки НЕ трогаем — так же, как удаление пользователя не стирает его сообщения.
+  if (countGroupMembers.get(group.id).c === 0) { deleteGroupMembersStmt.run(group.id); deleteGroupStmt.run(group.id); }
+  broadcastGroupsChanged();
+  res.json({ ok: true });
+});
+
+app.delete('/api/groups/:id', auth, (req, res) => {
+  const group = getGroup.get(Number(req.params.id));
+  if (!group) return res.status(404).json({ error: 'Группа не найдена' });
+  if (!canManageGroup(req.user, group)) return res.status(403).json({ error: 'Недостаточно прав' });
+  deleteGroupMembersStmt.run(group.id);
+  deleteGroupStmt.run(group.id); // историю переписки не трогаем — та же логика, что у удаления пользователя/отдела
+  broadcastGroupsChanged();
+  res.json({ ok: true });
+});
+
+// 'general' — общая комната, видна всем (как и раньше, без проверки членства). Для 'group:<id>' —
+// историю может смотреть только участник группы (или админ) — раньше проверки не было вовсе, но
+// пока комната была ровно одна и открыта всем, это было не багом, а особенностью.
+function canReadRoom(user, room) {
+  if (!isGroupRoom(room)) return true;
+  return !!isGroupMemberStmt.get(groupIdFromRoom(room), user.id) || !!user.can_admin;
+}
+
 // История: без параметров — последние 200 сообщений (как раньше); ?since=&until= — диапазон
 // (используется для "сегодняшнего" окна чата и просмотра конкретного дня); ?q= — поиск по тексту
 // во всей истории переписки (диапазон дат при этом игнорируется).
 app.get('/api/history/room/:room', auth, (req, res) => {
+  if (!canReadRoom(req.user, req.params.room)) return res.status(403).json({ error: 'Вы не участник этой группы' });
   const { since, until, q } = req.query;
   const before = beforeId(req);
   if (q) return res.json(attachReactions(roomHistorySearch.all(req.params.room, before, q).reverse().map(normalizeRow)));
@@ -637,7 +769,10 @@ function beforeId(req) {
   return Number.isFinite(b) && b > 0 ? b : BEFORE_ID_MAX;
 }
 
-app.get('/api/history/room/:room/days', auth, (req, res) => res.json(roomHistoryDays.all(tzModifier(req), req.params.room)));
+app.get('/api/history/room/:room/days', auth, (req, res) => {
+  if (!canReadRoom(req.user, req.params.room)) return res.status(403).json({ error: 'Вы не участник этой группы' });
+  res.json(roomHistoryDays.all(tzModifier(req), req.params.room));
+});
 
 app.get('/api/history/dm/:userId', auth, (req, res) => {
   const other = Number(req.params.userId);
@@ -953,6 +1088,15 @@ function broadcastUsersChanged() {
   for (const ws of connMeta.keys()) ws.send(payload);
 }
 
+// Группа создана/переименована/у неё поменялись участники/её удалили — оповещаем ВСЕХ подключённых
+// (не только текущих/бывших участников — проще и надёжнее целевой рассылки, а список групп у
+// каждого клиента крошечный, перезапросить его не накладно), клиент сам решает, актуально ли это
+// для него, и просто перезапрашивает /api/groups.
+function broadcastGroupsChanged() {
+  const payload = JSON.stringify({ type: 'groups-changed' });
+  for (const ws of connMeta.keys()) ws.send(payload);
+}
+
 wss.on('connection', (ws, req) => {
   const url = new URL(req.url, 'http://x');
   const token = url.searchParams.get('token');
@@ -989,7 +1133,14 @@ wss.on('connection', (ws, req) => {
     // события, так что явного "закончил печатать" сигнала не нужно.
     if (msg.type === 'typing') {
       const out = JSON.stringify({ type: 'typing', room: msg.room || null, from_id: user.id, from_user: user.display_name });
-      if (msg.room) {
+      if (isGroupRoom(msg.room)) {
+        // Только участникам группы, а не буквально всем (как для 'general') — иначе кто угодно
+        // подключённый увидел бы, что кто-то печатает в группе, где его самого нет.
+        for (const uid of groupMemberIds(groupIdFromRoom(msg.room))) {
+          if (uid === user.id) continue;
+          (online.get(uid) || new Set()).forEach((c) => c.send(out));
+        }
+      } else if (msg.room) {
         for (const [c, meta] of connMeta) { if (meta.userId !== user.id) c.send(out); }
       } else if (msg.to) {
         (online.get(Number(msg.to)) || new Set()).forEach((c) => c.send(out));
@@ -1040,6 +1191,9 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type !== 'send') return;
+    // Писать в группу может только её участник — молча игнорируем чужую попытку (не подсказываем
+    // подбором id группы, что именно там за люди/переписка).
+    if (isGroupRoom(msg.room) && !isGroupMemberStmt.get(groupIdFromRoom(msg.room), user.id)) return;
     const now = Date.now();
     const text = String(msg.text || '').slice(0, 4000).trim();
     // Несколько файлов в одном сообщении: msg.files — массив; msg.file (в ед. числе) — старый формат,
@@ -1071,7 +1225,11 @@ wss.on('connection', (ws, req) => {
     if (msg.room) {
       const info = insertMessage.run(user.id, msg.room, null, text, filesJson, now, replyToId, replySnapshot);
       const out = JSON.stringify({ type: 'message', id: info.lastInsertRowid, room: msg.room, from_id: user.id, from_user: user.display_name, text, files, created_at: now, reply: replyOut });
-      for (const c of connMeta.keys()) c.send(out); // общая комната — всем
+      if (isGroupRoom(msg.room)) {
+        for (const uid of groupMemberIds(groupIdFromRoom(msg.room))) (online.get(uid) || new Set()).forEach((c) => c.send(out));
+      } else {
+        for (const c of connMeta.keys()) c.send(out); // общая комната — всем
+      }
     } else if (msg.to) {
       const info = insertMessage.run(user.id, null, msg.to, text, filesJson, now, replyToId, replySnapshot);
       const out = JSON.stringify({ type: 'message', id: info.lastInsertRowid, to_id: msg.to, from_id: user.id, from_user: user.display_name, text, files, created_at: now, reply: replyOut });
