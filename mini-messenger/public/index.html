@@ -100,6 +100,7 @@
     <div class="nav-item" data-view="history">Переписки</div>
     <div class="nav-item" data-view="broadcast">Рассылка</div>
     <div class="nav-item" data-view="files">Файлы</div>
+    <div class="nav-item" data-view="logs">Логи</div>
     <div class="foot">
       <div class="who" id="whoName"></div>
       <div class="role" id="whoRole"></div>
@@ -183,6 +184,31 @@
 
     <div class="view" id="view-files">
       <h2>Файлы на сервере</h2>
+
+      <div class="panel">
+        <h3>Ограничения на загрузку</h3>
+        <p style="color:var(--muted); font-size:12.5px; margin:0 0 12px;">
+          Действует сразу для всех — без перезапуска сервера. «Запрещённые» — список того, что нельзя
+          прислать (всё остальное можно); «Разрешённые» — наоборот, можно только то, что в списке.
+          Расширения — через запятую или пробел, без точки (exe, bat, zip...).
+        </p>
+        <div class="row-flex" style="margin-bottom:10px;">
+          <select id="uploadExtMode">
+            <option value="block">Запрещённые расширения</option>
+            <option value="allow">Разрешённые расширения</option>
+          </select>
+          <label class="row-flex" style="gap:6px; font-size:12.5px; color:var(--muted);">
+            Макс. размер файла (МБ)
+            <input type="number" id="uploadMaxMb" min="1" style="width:80px">
+          </label>
+        </div>
+        <textarea id="uploadExtList" style="width:100%; height:60px;" placeholder="exe, bat, cmd, ..."></textarea>
+        <div class="row-flex" style="margin-top:10px;">
+          <button class="action" onclick="saveUploadSettings()">Сохранить</button>
+          <span id="uploadSettingsMsg" style="color:var(--muted); font-size:12px;"></span>
+        </div>
+      </div>
+
       <div class="panel">
         <p style="color:var(--muted); font-size:12.5px; margin:0 0 4px;">
           Все файлы, которые когда-либо отправляли через личную переписку, общую комнату или рассылки.
@@ -196,6 +222,36 @@
         <table>
           <thead><tr><th>Имя файла</th><th>Откуда</th><th>От кого</th><th>Когда</th><th>Размер</th><th></th></tr></thead>
           <tbody id="filesBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="view" id="view-logs">
+      <h2>Логи</h2>
+      <div class="panel">
+        <p style="color:var(--muted); font-size:12.5px; margin:0 0 10px;">
+          Входы/выходы, срабатывания защиты от подбора пароля и ошибки сервера — плюс ошибки,
+          присланные с рабочих мест сотрудников (сбои в приложении на их ПК). Хранится по дням в
+          файлах на сервере (папка logs/), здесь — только просмотр.
+        </p>
+        <div class="row-flex">
+          <input type="date" id="logsDay">
+          <select id="logsType">
+            <option value="all">Сервер и клиенты</option>
+            <option value="server">Только сервер</option>
+            <option value="client">Только клиенты</option>
+          </select>
+          <select id="logsLevel">
+            <option value="all">Все уровни</option>
+            <option value="ERROR">Только ошибки</option>
+            <option value="WARN">Предупреждения и ошибки</option>
+          </select>
+          <button class="action" onclick="loadLogs()">Показать</button>
+          <span id="logsSummary" style="color:var(--muted); font-size:12px;"></span>
+        </div>
+        <table style="margin-top:12px;">
+          <thead><tr><th style="width:80px">Время</th><th style="width:70px">Уровень</th><th style="width:60px">Откуда</th><th style="width:150px">Событие</th><th>Подробности</th></tr></thead>
+          <tbody id="logsBody"></tbody>
         </table>
       </div>
     </div>
@@ -468,6 +524,30 @@ function fmtSize(bytes) {
   return (bytes / (1024 * 1024)).toFixed(1) + ' МБ';
 }
 
+async function loadUploadSettings() {
+  try {
+    const s = await api('/api/admin/upload-settings');
+    document.getElementById('uploadExtMode').value = s.mode;
+    document.getElementById('uploadExtList').value = s.extensions.join(', ');
+    document.getElementById('uploadMaxMb').value = s.maxMb;
+    document.getElementById('uploadMaxMb').max = s.hardCeilingMb;
+  } catch (e) { document.getElementById('uploadSettingsMsg').textContent = 'Ошибка: ' + e.message; }
+}
+async function saveUploadSettings() {
+  const msg = document.getElementById('uploadSettingsMsg');
+  msg.textContent = 'Сохранение...';
+  try {
+    await api('/api/admin/upload-settings', { method: 'PATCH', body: JSON.stringify({
+      mode: document.getElementById('uploadExtMode').value,
+      extensions: document.getElementById('uploadExtList').value,
+      maxMb: document.getElementById('uploadMaxMb').value,
+    }) });
+    msg.textContent = 'Сохранено';
+    setTimeout(() => { if (msg.textContent === 'Сохранено') msg.textContent = ''; }, 2500);
+    loadUploadSettings();
+  } catch (e) { msg.textContent = 'Ошибка: ' + e.message; }
+}
+
 async function loadFiles() {
   const body = document.getElementById('filesBody');
   body.innerHTML = '<tr><td colspan="6">Загрузка...</td></tr>';
@@ -490,6 +570,37 @@ async function loadFiles() {
 async function deleteFile(diskName) {
   if (!confirm('Удалить файл с сервера без возможности восстановления?')) return;
   try { await api(`/api/admin/files/${encodeURIComponent(diskName)}`, { method: 'DELETE' }); loadFiles(); } catch (e) { alert(e.message); }
+}
+
+function todayStr() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+const LEVEL_COLOR = { INFO: 'var(--muted)', WARN: 'var(--warn)', ERROR: 'var(--danger)' };
+async function loadLogs() {
+  const day = document.getElementById('logsDay').value || todayStr();
+  document.getElementById('logsDay').value = day;
+  const type = document.getElementById('logsType').value;
+  const level = document.getElementById('logsLevel').value;
+  const body = document.getElementById('logsBody');
+  body.innerHTML = '<tr><td colspan="5">Загрузка...</td></tr>';
+  try {
+    const { entries, truncated, total } = await api(`/api/admin/logs?day=${day}&type=${type}&level=${level}`);
+    document.getElementById('logsSummary').textContent = `Записей: ${total}` + (truncated ? ' (показаны последние ' + entries.length + ')' : '');
+    body.innerHTML = entries.map(e => {
+      const time = new Date(e.ts).toLocaleTimeString('ru-RU');
+      const color = LEVEL_COLOR[e.level] || 'var(--muted)';
+      // meta уже структура, а не строка — просто аккуратно раскладываем в "ключ: значение" построчно
+      const details = Object.entries(e.meta || {}).map(([k, v]) => `${escapeHtml(k)}: ${escapeHtml(String(v))}`).join(' · ');
+      return `<tr>
+          <td style="color:var(--muted); font-variant-numeric:tabular-nums;">${time}</td>
+          <td style="color:${color}; font-weight:700;">${e.level}</td>
+          <td style="color:var(--muted);">${e.source === 'client' ? 'клиент' : 'сервер'}</td>
+          <td>${escapeHtml(e.event)}</td>
+          <td style="color:var(--muted); font-size:12px;">${details}</td>
+        </tr>`;
+    }).join('') || '<tr><td colspan="5" style="color:var(--muted)">За этот день записей нет</td></tr>';
+  } catch (e) { body.innerHTML = `<tr><td colspan="5">Ошибка: ${e.message}</td></tr>`; }
 }
 
 async function loadBroadcastFeed() {
@@ -535,6 +646,9 @@ async function startDash() {
   await loadHistory();
   await loadBroadcastFeed();
   await loadFiles();
+  await loadUploadSettings();
+  document.getElementById('logsDay').value = todayStr();
+  await loadLogs();
   connectPresenceWs();
   setInterval(refreshAll, 30000);
 }

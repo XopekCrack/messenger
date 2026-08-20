@@ -458,42 +458,96 @@ function auth(req, res, next) {
 // ---------- Файлы ----------
 const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir);
-const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 
+// Жёсткий потолок на express.raw() ниже — не то, что видит администратор в настройках, а абсолютная
+// граница, которую body-parser никогда не превысит, даже если кто-то подделает Content-Length или
+// настройка "макс. размер" из app_settings ещё не подгружена. Сам действующий лимит — динамический,
+// хранится в app_settings (см. getUploadSettings) и меняется из веб-панели без перезапуска сервера.
+const UPLOAD_HARD_CEILING_MB = 1024;
+const DEFAULT_MAX_UPLOAD_MB = 50;
 // Расширения, которые Windows исполняет одним двойным кликом (или через известный интерпретатор,
-// как .ps1/.vbs/.js) — блокируем при загрузке. Для организационного мессенджера риск, что кто-то
-// по ошибке (или обманом) запустит присланный "документ.exe", перевешивает удобство прислать
-// исполняемый файл напрямую в переписке — для этого остаётся архив через другой канал.
-const BLOCKED_UPLOAD_EXTENSIONS = new Set([
+// как .ps1/.vbs/.js) — список по умолчанию для режима "запрещённые": для организационного
+// мессенджера риск, что кто-то по ошибке (или обманом) запустит присланный "документ.exe",
+// перевешивает удобство прислать исполняемый файл напрямую в переписке. Администратор может
+// заменить и список, и режим (запрещённые/разрешённые) из веб-панели — см. /api/admin/upload-settings.
+const DEFAULT_BLOCKED_EXTENSIONS = [
   'exe', 'bat', 'cmd', 'com', 'scr', 'msi', 'msp', 'msc',
   'ps1', 'ps1xml', 'psc1', 'psd1', 'psm1',
   'vbs', 'vbe', 'js', 'jse', 'wsf', 'wsh', 'hta', 'cpl', 'reg', 'lnk', 'inf', 'gadget', 'application', 'jar',
-]);
-function isBlockedUploadName(name) {
+];
+function getUploadSettings() {
+  const mode = getSettingRaw('upload_ext_mode') === 'allow' ? 'allow' : 'block';
+  const extRaw = getSettingRaw('upload_ext_list');
+  const extensions = extRaw !== null
+    ? extRaw.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)
+    : DEFAULT_BLOCKED_EXTENSIONS.slice();
+  const maxMb = Math.min(Number(getSettingRaw('upload_max_mb')) || DEFAULT_MAX_UPLOAD_MB, UPLOAD_HARD_CEILING_MB);
+  return { mode, extensions, maxMb };
+}
+function isUploadAllowed(name, settings) {
   const ext = String(name).split('.').pop().toLowerCase();
-  return BLOCKED_UPLOAD_EXTENSIONS.has(ext);
+  const inList = settings.extensions.includes(ext);
+  return settings.mode === 'allow' ? inList : !inList;
 }
 
 app.post('/api/upload', auth, (req, res, next) => {
-  // Проверяем тип ДО чтения тела запроса (имя файла уже известно из query-параметра) — так
-  // запрещённый файл не занимает лишний трафик и не оседает в памяти сервера зря.
-  if (isBlockedUploadName(String(req.query.name || ''))) {
+  // Проверяем тип и объявленный размер ДО чтения тела запроса (имя файла и Content-Length уже
+  // известны на этом этапе) — так запрещённый или слишком большой файл не занимает лишний трафик
+  // и не оседает в памяти сервера зря. req._uploadMaxBytes прокидываем дальше на случай, если
+  // Content-Length отсутствовал и финальную проверку придётся делать уже по факту принятого тела.
+  const settings = getUploadSettings();
+  req._uploadMaxBytes = settings.maxMb * 1024 * 1024;
+  if (!isUploadAllowed(String(req.query.name || ''), settings)) {
     logServer('WARN', 'upload_blocked', { name: req.query.name, userId: req.user.id, ip: req.ip });
-    return res.status(415).json({ error: 'Такой тип файла запрещён к отправке (исполняемые/скриптовые файлы)' });
+    return res.status(415).json({ error: 'Такой тип файла запрещён к отправке администратором' });
+  }
+  const declaredLength = Number(req.headers['content-length'] || 0);
+  if (declaredLength && declaredLength > req._uploadMaxBytes) {
+    return res.status(413).json({ error: `Файл больше ${settings.maxMb} МБ` });
   }
   next();
-}, express.raw({ limit: '50mb', type: () => true }), (req, res) => {
+}, express.raw({ limit: `${UPLOAD_HARD_CEILING_MB}mb`, type: () => true }), (req, res) => {
   const originalName = String(req.query.name || 'file').replace(/[\\/:*?"<>|]/g, '_').slice(0, 150);
-  const safeName = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}-${originalName}`;
   if (!req.body || !req.body.length) return res.status(400).json({ error: 'Пустой файл' });
+  if (req.body.length > req._uploadMaxBytes) {
+    return res.status(413).json({ error: `Файл больше ${Math.round(req._uploadMaxBytes / 1024 / 1024)} МБ` });
+  }
+  const safeName = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}-${originalName}`;
   fs.writeFileSync(path.join(uploadsDir, safeName), req.body);
   res.json({ url: `/uploads/${safeName}`, name: originalName, size: req.body.length });
 });
-// Файл больше лимита (50 МБ) — express.raw() бросает ошибку мимо обработчика выше; ловим её здесь,
-// иначе клиент получит HTML-страницу вместо JSON и "Не удалось загрузить файл" без объяснения причины.
+// Файл больше жёсткого потолка (см. UPLOAD_HARD_CEILING_MB) — express.raw() бросает ошибку мимо
+// обработчика выше; ловим её здесь, иначе клиент получит HTML-страницу вместо JSON.
 app.use('/api/upload', (err, req, res, next) => {
-  if (err) return res.status(413).json({ error: `Файл больше ${MAX_UPLOAD_BYTES / 1024 / 1024} МБ` });
+  if (err) return res.status(413).json({ error: `Файл больше ${UPLOAD_HARD_CEILING_MB} МБ` });
   next();
+});
+
+// Настройки загрузки — какие расширения разрешать/запрещать и максимальный размер файла,
+// администратор меняет из веб-панели (раздел "Файлы") без правки кода и перезапуска сервера.
+app.get('/api/admin/upload-settings', auth, requireCapability('can_admin'), (req, res) => {
+  const s = getUploadSettings();
+  res.json({ ...s, hardCeilingMb: UPLOAD_HARD_CEILING_MB });
+});
+app.patch('/api/admin/upload-settings', auth, requireCapability('can_admin'), (req, res) => {
+  const { mode, extensions, maxMb } = req.body || {};
+  if (mode !== undefined) {
+    if (mode !== 'block' && mode !== 'allow') return res.status(400).json({ error: 'Некорректный режим' });
+    setSettingRaw('upload_ext_mode', mode);
+  }
+  if (extensions !== undefined) {
+    const clean = String(extensions).split(/[,\s]+/).map((s) => s.trim().toLowerCase().replace(/^\./, '')).filter(Boolean);
+    setSettingRaw('upload_ext_list', clean.join(','));
+  }
+  if (maxMb !== undefined) {
+    const n = Number(maxMb);
+    if (!Number.isFinite(n) || n < 1 || n > UPLOAD_HARD_CEILING_MB) {
+      return res.status(400).json({ error: `Размер должен быть от 1 до ${UPLOAD_HARD_CEILING_MB} МБ` });
+    }
+    setSettingRaw('upload_max_mb', String(Math.round(n)));
+  }
+  logServer('INFO', 'upload_settings_changed', { adminId: req.user.id, mode, extensions, maxMb });
+  res.json({ ...getUploadSettings(), hardCeilingMb: UPLOAD_HARD_CEILING_MB });
 });
 
 // Короткоживущий токен на скачивание ОДНОГО конкретного файла — раньше в ?token= подставляли
@@ -1013,6 +1067,57 @@ app.get('/api/admin/stats', auth, requireCapability('can_admin'), (req, res) => 
     messagesTotal: messagesCount.get().c,
     uptimeSeconds: Math.floor(process.uptime()),
   });
+});
+
+const LOG_VIEW_LIMIT = 2000;
+// Разбирает одну строку лог-файла обратно в структуру — формат задан в logServer/logClient выше:
+// "<ISO-время> [LEVEL] событие {...meta}" для серверных записей, "<ISO-время> [CLIENT] {...}" для
+// присланных клиентом. Строки, не подошедшие под формат (например, обрезанные при аварийном
+// завершении записи), тихо пропускаются, а не ломают всю выдачу.
+function parseLogLine(line, source) {
+  const spaceIdx = line.indexOf(' ');
+  if (spaceIdx < 0) return null;
+  const ts = line.slice(0, spaceIdx);
+  const rest = line.slice(spaceIdx + 1);
+  if (source === 'server') {
+    const m = rest.match(/^\[(\w+)\] (\S+) (\{[\s\S]*\})$/);
+    if (!m) return null;
+    let meta = {};
+    try { meta = JSON.parse(m[3]); } catch { /* строка повреждена — оставляем meta пустым */ }
+    return { ts, level: m[1], source: 'server', event: m[2], meta };
+  }
+  const m = rest.match(/^\[CLIENT\] (\{[\s\S]*\})$/);
+  if (!m) return null;
+  let meta = {};
+  try { meta = JSON.parse(m[1]); } catch { /* строка повреждена — оставляем meta пустым */ }
+  // Клиентские записи всегда об ошибке (см. installErrorReporting в ui-kit.js — шлёт только сбои),
+  // отдельного уровня в самой строке нет, поэтому фиксируем ERROR для единообразия с серверными.
+  return { ts, level: 'ERROR', source: 'client', event: meta.kind || 'client_error', meta };
+}
+// Логи читаются прямо из дневных файлов (см. logsDir выше), без отдельной БД-таблицы под них —
+// для 20-200 человек файл за день весит от силы сотни КБ, гонять его целиком в память при каждом
+// открытии панели не проблема, а второе хранилище логов ради этого не оправдано.
+app.get('/api/admin/logs', auth, requireCapability('can_admin'), (req, res) => {
+  const day = /^\d{4}-\d{2}-\d{2}$/.test(req.query.day) ? req.query.day : dayStamp();
+  const typeFilter = ['server', 'client'].includes(req.query.type) ? req.query.type : 'all';
+  const levelFilter = ['INFO', 'WARN', 'ERROR'].includes(req.query.level) ? req.query.level : 'all';
+  let entries = [];
+  for (const source of ['server', 'client']) {
+    if (typeFilter !== 'all' && typeFilter !== source) continue;
+    const filePath = path.join(logsDir, `${source}-${day}.log`);
+    if (!fs.existsSync(filePath)) continue;
+    const lines = fs.readFileSync(filePath, 'utf8').split('\n').filter(Boolean);
+    for (const line of lines) {
+      const parsed = parseLogLine(line, source);
+      if (parsed) entries.push(parsed);
+    }
+  }
+  // Фильтр по уровню — "от" (WARN означает WARN и выше), а не точное совпадение: так выбор
+  // "Предупреждения и ошибки" в панели действительно скрывает только шумные INFO-записи.
+  const LEVEL_RANK = { INFO: 0, WARN: 1, ERROR: 2 };
+  if (levelFilter !== 'all') entries = entries.filter((e) => (LEVEL_RANK[e.level] ?? 0) >= LEVEL_RANK[levelFilter]);
+  entries.sort((a, b) => (a.ts < b.ts ? 1 : -1)); // новые сверху
+  res.json({ entries: entries.slice(0, LOG_VIEW_LIMIT), truncated: entries.length > LOG_VIEW_LIMIT, total: entries.length });
 });
 
 // ---------- WebSocket (реалтайм + presence) ----------
