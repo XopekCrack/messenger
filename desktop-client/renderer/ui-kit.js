@@ -135,7 +135,7 @@
   // сервер лёг, у каждого появится свой, это ожидаемо, не дублирование одного и того же окна.
   let connectionLostOverlay = null;
   window.showConnectionLostModal = (onRetry) => {
-    if (connectionLostOverlay) return; // уже показан в этом окне
+    if (connectionLostOverlay || window.appShuttingDown) return; // уже показан в этом окне / выключаемся
     const overlay = document.createElement('div');
     overlay.className = 'ui-modal-overlay';
     const box = document.createElement('div');
@@ -159,6 +159,19 @@
     connectionLostOverlay.remove();
     connectionLostOverlay = null;
   };
+
+  // Windows завершает сеанс (выключение/перезагрузка), главный процесс вот-вот снесёт окна — см.
+  // beginShutdown в main.js. Общий флаг на окно: connectWs в roster/chat/broadcast перестаёт
+  // переподключаться, а диалог о потере связи больше не всплывает. Без этого сеть, отваливающаяся
+  // на выключении раньше нас, гарантированно роняла каждое окно в цикл реконнекта и показывала
+  // модалку прямо поверх экрана выключения — лишняя работа ровно тогда, когда её меньше всего надо.
+  window.appShuttingDown = false;
+  if (window.desktop && window.desktop.onShuttingDown) {
+    window.desktop.onShuttingDown(() => {
+      window.appShuttingDown = true;
+      window.hideConnectionLostModal();
+    });
+  }
 
   // Короткое ненавязчивое уведомление ("Файл скачан", "Скопировано в буфер обмена") — в отличие
   // от uiAlert, ничего не блокирует и само пропадает через пару секунд.
