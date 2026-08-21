@@ -667,6 +667,7 @@ function connectWs() {
     if (belongs) { hideTypingIndicator(); addMessage(data); } // раз сообщение пришло — печатать закончил
   };
   ws.onclose = () => {
+    if (window.appShuttingDown) return; // выключается ПК — не переподключаемся и не мигаем модалкой
     if (!wsLostTimer) wsLostTimer = setTimeout(() => { wsLostTimer = null; showConnectionLostModal(connectWs); }, 5000);
     // Бэкофф: 2с → ×1.5 после каждой неудачи, потолок 30с — при обрыве сети на несколько часов
     // это фоновые редкие попытки, а не спам раз в 2 секунды. Успешное onopen сбрасывает задержку.
