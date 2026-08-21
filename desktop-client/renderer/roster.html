@@ -24,6 +24,13 @@
   #auth .switch { -webkit-app-region: no-drag; text-align: center; color: var(--muted); cursor: pointer; margin-top: 6px; }
   #auth .switch:hover { color: var(--text); }
   #auth .err { color: var(--danger); text-align: center; min-height: 16px; font-size: 12px; }
+  /* Подсказка про Caps Lock (см. refreshCapsHint) — пароль в поле не виден, и набранный с зажатым
+     Caps Lock он выглядит точно так же, как правильный: человек несколько раз получает "неверный
+     логин или пароль", не понимая, почему. Показываем ровно тогда, когда Caps Lock действительно
+     включён, — постоянная надпись быстро становится фоновым шумом и перестаёт читаться. */
+  #auth .caps-hint { display: none; align-items: center; gap: 6px; font-size: 11.5px; color: var(--afk); padding: 0 2px; }
+  #auth .caps-hint.show { display: flex; }
+  #auth .caps-hint svg { flex-shrink: 0; }
 
   /* ---- Заголовок ---- */
   .wintitlebar .title { font-weight: 600; font-size: 12px; letter-spacing: .3px; display: flex; align-items: center; gap: 6px; flex-shrink: 0; -webkit-app-region: drag; }
@@ -220,6 +227,7 @@
   <form id="authForm" onsubmit="event.preventDefault(); doAuth();">
     <input id="username" placeholder="Логин">
     <input id="password" type="password" placeholder="Пароль">
+    <div class="caps-hint" id="capsHint"><span></span>Включён Caps Lock</div>
     <button class="primary" type="submit">Войти</button>
   </form>
   <div class="switch" id="switchMode" onclick="toggleMode()">Нет аккаунта? Зарегистрироваться</div>
@@ -322,6 +330,18 @@ let searchQuery = '';
 
 function initials(name) { return (name || '?').slice(0, 2).toUpperCase(); }
 function displayNameOf(u) { return u.display_name || u.username; }
+
+// Caps Lock отслеживаем на уровне документа, а не поля пароля: клавишу почти всегда нажимают ДО
+// того, как поставить курсор в поле, — слушая только сам input, мы узнали бы об этом лишь после
+// первого набранного символа. getModifierState есть и у мыши, поэтому клик по форме тоже обновляет
+// подсказку (случай "Caps Lock был включён ещё до запуска клиента").
+function refreshCapsHint(e) {
+  if (!e || typeof e.getModifierState !== 'function') return;
+  document.getElementById('capsHint').classList.toggle('show', e.getModifierState('CapsLock'));
+}
+document.addEventListener('keydown', refreshCapsHint);
+document.addEventListener('keyup', refreshCapsHint);
+document.addEventListener('mousedown', refreshCapsHint);
 
 function toggleMode() {
   mode = mode === 'login' ? 'register' : 'login';
@@ -481,6 +501,7 @@ desktop.onIdleState(({ state, idleSeconds }) => {
 desktop.onShowAlert(({ message, title }) => uiAlert(message, title));
 
 document.getElementById('historyRowIcon').innerHTML = uiIcon('megaphone');
+document.querySelector('#capsHint span').innerHTML = uiIcon('capsLock');
 document.getElementById('historyRow').onclick = () => desktop.openBroadcast({ token, serverUrl, me: JSON.stringify(me) });
 
 // ---------- Профиль и настройки — панель под me-bar (не отдельное окно) ----------
