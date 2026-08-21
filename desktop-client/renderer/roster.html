@@ -698,7 +698,7 @@ function makeUserRow(u) {
   const row = document.createElement('div');
   row.className = 'row' + (isMe ? ' is-me' : '');
   row.dataset.uid = u.id; // нужно для точечного обновления статуса без пересборки всего списка
-  row.innerHTML = `<div class="dot ${p.state}"></div><div class="n">${name}${isMe ? ' <span class="me-tag">это вы</span>' : ''}</div><span class="unread-badge"></span>`;
+  row.innerHTML = `<div class="dot ${p.state}"></div><div class="n">${escapeHtml(name)}${isMe ? ' <span class="me-tag">это вы</span>' : ''}</div><span class="unread-badge"></span>`;
   if (!isMe) setUnreadBadge(row, unreadDmCounts[u.id] || 0);
   if (isMe) {
     row.title = 'Профиль и настройки';

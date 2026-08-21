@@ -127,6 +127,20 @@
       <h2>Пользователи</h2>
 
       <div class="panel">
+        <h3>Самостоятельная регистрация</h3>
+        <p style="color:var(--muted); font-size:12px; margin:0 0 10px;">
+          Когда включена, любой, кто дотянулся до адреса сервера, может сам завести себе учётную
+          запись и попасть в список сотрудников и в общую комнату. Для рабочей сети это обычно
+          лишнее: надёжнее выключить и заводить людей вручную кнопкой «Добавить сотрудника» ниже.
+        </p>
+        <label class="row-flex" style="cursor:pointer;">
+          <input type="checkbox" id="regOpen" onchange="saveRegistration(this.checked)">
+          <span>Разрешить сотрудникам регистрироваться самим</span>
+          <span id="regMsg" style="color:var(--muted); font-size:12px;"></span>
+        </label>
+      </div>
+
+      <div class="panel">
         <h3>Отделы</h3>
         <p style="color:var(--muted); font-size:12px; margin:0 0 10px;">
           Права (рассылки/админка) выдаются только персонально — ниже, каждому пользователю. Здесь
@@ -380,14 +394,17 @@ function renderDepts() {
       </td>
       <td>${escapeHtml(d.name)}</td>
       <td class="row-flex">
-        <button class="action ghost" onclick="renameDept(${d.id}, '${escapeHtml(d.name).replace(/'/g, "\\'")}')">Переименовать</button>
+        <button class="action ghost" onclick="renameDept(${d.id})">Переименовать</button>
         <button class="action danger" onclick="deleteDept(${d.id})">Удалить</button>
       </td>`;
     body.appendChild(tr);
   });
   document.getElementById('newDept').innerHTML = '<option value="">Без отдела</option>' + deptsCache.map(d => `<option value="${d.id}">${escapeHtml(d.name)}</option>`).join('');
 }
-async function renameDept(id, currentName) {
+// Текущее имя берём из кэша по id, а не подставляем строкой в сам onclick: подстановка ломалась
+// на любой кавычке в названии отдела (и открывала бы вставку разметки, если бы имя туда попало).
+async function renameDept(id) {
+  const currentName = deptsCache.find(d => d.id === id)?.name || '';
   const name = prompt('Новое название отдела:', currentName);
   if (!name || !name.trim() || name.trim() === currentName) return;
   try { await api(`/api/admin/departments/${id}`, { method: 'PATCH', body: JSON.stringify({ name: name.trim() }) }); refreshAll(); } catch (e) { alert(e.message); }
@@ -400,15 +417,31 @@ async function moveDept(index, dir) {
   try { await api('/api/admin/departments/reorder', { method: 'POST', body: JSON.stringify({ order }) }); refreshAll(); } catch (e) { alert(e.message); }
 }
 
+async function loadRegistration() {
+  try {
+    const { open } = await api('/api/admin/registration');
+    document.getElementById('regOpen').checked = open;
+  } catch { /* не критично: остальная панель работает и без этого переключателя */ }
+}
+async function saveRegistration(open) {
+  const msg = document.getElementById('regMsg');
+  try {
+    await api('/api/admin/registration', { method: 'PATCH', body: JSON.stringify({ open }) });
+    msg.textContent = open ? 'Регистрация разрешена' : 'Регистрация выключена';
+    setTimeout(() => { msg.textContent = ''; }, 2500);
+  } catch (e) { msg.textContent = 'Ошибка: ' + e.message; loadRegistration(); }
+}
+
 async function refreshAll() {
   usersCache = await api('/api/admin/users');
   deptsCache = await api('/api/departments');
   renderUsers();
   renderDepts();
-  const opts = usersCache.map(u => `<option value="${u.id}">${u.display_name}</option>`).join('');
+  const opts = usersCache.map(u => `<option value="${u.id}">${escapeHtml(u.display_name)}</option>`).join('');
   document.getElementById('histUser1').innerHTML = opts;
   document.getElementById('histUser2').innerHTML = opts;
   loadStats();
+  loadRegistration();
 }
 
 async function createUser() {
@@ -453,13 +486,23 @@ document.getElementById('histType').onchange = (e) => {
   document.getElementById('histUser2').style.display = isDm ? 'inline-block' : 'none';
 };
 
-function escapeHtml(s) { return s.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
+// Экранируем И кавычки тоже: без них значение, попавшее в атрибут (например value="..." в списке
+// сотрудников), закрывало атрибут своей кавычкой и дальше писало уже разметку — то есть обычного
+// экранирования "<" и ">" для атрибутов недостаточно. String() — потому что сюда попадают и
+// значения из логов, где на месте строки может оказаться число или null, а у них нет .replace.
+function escapeHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
 
 function renderHistoryBox(items) {
   document.getElementById('histMessages').innerHTML = items.map(m => {
     const time = new Date(m.created_at).toLocaleString('ru-RU');
     const files = (m.files || []).map(f => ` 📎 ${escapeHtml(f.name)}${f.exists === false ? ' (удалён с диска)' : ''}`).join('');
-    return `<div class="m"><b>${m.from_user}:</b> ${escapeHtml(m.text)}${files}<span class="t">${time}</span></div>`;
+    // from_user — это отображаемое имя, которое сотрудник задаёт себе сам в клиенте. Без
+    // экранирования имя вида "<img src=x onerror=...>" выполнялось бы прямо здесь, в открытой
+    // сессии администратора, — то есть любой сотрудник мог получить доступ к панели, просто
+    // переименовавшись и дождавшись, когда админ откроет переписку.
+    return `<div class="m"><b>${escapeHtml(m.from_user)}:</b> ${escapeHtml(m.text)}${files}<span class="t">${time}</span></div>`;
   }).join('') || 'Сообщений пока нет';
 }
 
@@ -563,9 +606,9 @@ async function loadFiles() {
         <td>${f.from ? escapeHtml(f.from) : '—'}</td>
         <td>${new Date(f.created_at).toLocaleString('ru-RU')}</td>
         <td>${fmtSize(f.size)}</td>
-        <td><button class="action danger" onclick="deleteFile('${f.diskName.replace(/'/g, "\\'")}')">Удалить</button></td>
+        <td><button class="action danger" data-disk="${escapeHtml(f.diskName)}" onclick="deleteFile(this.dataset.disk)">Удалить</button></td>
       </tr>`).join('') || '<tr><td colspan="6" style="color:var(--muted)">Файлов пока нет</td></tr>';
-  } catch (e) { body.innerHTML = `<tr><td colspan="6">Ошибка: ${e.message}</td></tr>`; }
+  } catch (e) { body.innerHTML = `<tr><td colspan="6">Ошибка: ${escapeHtml(e.message)}</td></tr>`; }
 }
 async function deleteFile(diskName) {
   if (!confirm('Удалить файл с сервера без возможности восстановления?')) return;
@@ -600,14 +643,14 @@ async function loadLogs() {
           <td style="color:var(--muted); font-size:12px;">${details}</td>
         </tr>`;
     }).join('') || '<tr><td colspan="5" style="color:var(--muted)">За этот день записей нет</td></tr>';
-  } catch (e) { body.innerHTML = `<tr><td colspan="5">Ошибка: ${e.message}</td></tr>`; }
+  } catch (e) { body.innerHTML = `<tr><td colspan="5">Ошибка: ${escapeHtml(e.message)}</td></tr>`; }
 }
 
 async function loadBroadcastFeed() {
   const items = await api('/api/broadcasts');
   document.getElementById('bcFeed').innerHTML = items.map(b => {
     const time = new Date(b.created_at).toLocaleString('ru-RU');
-    return `<div class="bc-item"><span class="who">${b.from_user}</span><span class="time">${time}</span><div class="txt">${escapeHtml(b.text)}</div></div>`;
+    return `<div class="bc-item"><span class="who">${escapeHtml(b.from_user)}</span><span class="time">${time}</span><div class="txt">${escapeHtml(b.text)}</div></div>`;
   }).join('') || '<div style="color:var(--muted)">Рассылок пока не было</div>';
 }
 async function sendBroadcast() {
